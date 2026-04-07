@@ -2,6 +2,8 @@
 #define SHARED_H
 
 #include <sys/types.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #define MSG_KEY       1234   /* generator  →  scheduler message queue  */
 #define SHM_KEY_CLK   4321   /* clock shared memory  (used by clk.c)   */
