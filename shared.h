@@ -12,6 +12,8 @@
 #define ALGO_RR       2   /* Round Robin                        */
 #define ALGO_FCFS_2   3   /* 2-CPU FCFS with work stealing      */
 
+#define MAX_PROCESSES 100
+
 /* =========================================================
  *  Process Control Block  (PCB)
  *  Carried through message queues and kept alive in the
@@ -79,6 +81,15 @@ typedef struct {
     QNode *tail;   /* append / steal from here */
     int    size;
 } ReadyQueue;
+
+typedef struct {
+    PCB ready_queue[MAX_PROCESSES];
+    int queue_size;
+    int running_count;
+    bool scheduler_ready;
+    bool all_processes_received;  /* Add this line */
+    bool all_processes_completed;
+} SharedMemory;
 
 /* ----  Queue helpers (implemented in queue.c or inlined)  ---- */
 
