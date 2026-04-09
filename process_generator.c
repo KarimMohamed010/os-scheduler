@@ -101,8 +101,8 @@ int main(int argc, char *argv[])
     if (clk_pid == -1) { perror("fork clk"); exit(EXIT_FAILURE); }
     if (clk_pid == 0) {
         /* Child: exec the clock binary */
-        execl("./clk", "clk", NULL);
-        perror("execl clk"); exit(EXIT_FAILURE);
+        execl("./clk.out", "clk.out", NULL);
+        perror("execl clk.out"); exit(EXIT_FAILURE);
     }
     printf("[Generator] Clock process forked (pid=%d)\n", clk_pid);
 
@@ -125,8 +125,8 @@ int main(int argc, char *argv[])
     if (sched_pid == -1) { perror("fork scheduler"); exit(EXIT_FAILURE); }
     if (sched_pid == 0) {
         /* Child: exec the scheduler binary */
-        execl("./scheduler", "scheduler", s_algo, s_q, s_n, s_m, NULL);
-        perror("execl scheduler"); exit(EXIT_FAILURE);
+        execl("./scheduler.out", "scheduler.out", s_algo, s_q, s_n, s_m, NULL);
+        perror("execl scheduler.out"); exit(EXIT_FAILURE);
     }
     printf("[Generator] Scheduler process forked (pid=%d)\n", sched_pid);
 
