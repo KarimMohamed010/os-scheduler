@@ -1,0 +1,1 @@
+process array is dynamic or static ? 
