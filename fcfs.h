@@ -2,8 +2,7 @@
 #define FCFS_H
 
 #include "shared.h"
-#include <cstring>
-#include "clk.c"
+#include <string.h>
 #include <sys/msg.h>
 
 /* 
@@ -126,7 +125,8 @@ static inline void fcfs_start_process(FCFS_Context *ctx, PCB *proc, int start_ti
         char id_str[10], runtime_str[10];
         sprintf(id_str, "%d", proc->id);
         sprintf(runtime_str, "%d", proc->runtime);
-        execl("./process", "process", id_str, runtime_str, NULL);
+        //execl("./process", "process", id_str, runtime_str, NULL);
+        execl("./process", "process", runtime_str, NULL);
         perror("execl failed");
         exit(1);
     } else {
@@ -159,16 +159,32 @@ static inline void fcfs_handle_completion(FCFS_Context *ctx, PCB *proc, int fini
     ctx->current_process.id = -1;
 }
 
-/* Check if any running process has finished (by signal or shared memory) */
-static inline void fcfs_check_finished_processes(FCFS_Context *ctx, int current_time) {
-    if (ctx->current_process.id != -1 && ctx->current_process.remaining > 0) {
-        /* TODO: Check if process has finished via signal or shared memory */
-        /* For simulation: check if remaining time is 0 */
-        if (ctx->current_process.remaining == 0) {
+// /* Check if any running process has finished (by signal or shared memory) */
+// static inline void fcfs_check_finished_processes(FCFS_Context *ctx, int current_time) {
+//     if (ctx->current_process.id != -1 && ctx->current_process.remaining > 0) {
+//         /* TODO: Check if process has finished via signal or shared memory */
+//         /* For simulation: check if remaining time is 0 */
+//         if (ctx->current_process.remaining == 0) {
+//             fcfs_handle_completion(ctx, &ctx->current_process, current_time);
+//         }
+//     }
+// }
+#include <sys/wait.h>
+
+static inline void fcfs_check_finished_processes(FCFS_Context *ctx, int current_time)
+{
+    if (ctx->current_process.id != -1)
+    {
+        int status;
+        pid_t result = waitpid(ctx->current_process.pid, &status, WNOHANG);
+
+        if (result > 0)
+        {
             fcfs_handle_completion(ctx, &ctx->current_process, current_time);
         }
     }
 }
+
 
 /* Dispatch next process if CPU is available */
 static inline void fcfs_dispatch_next(FCFS_Context *ctx, int current_time) {
