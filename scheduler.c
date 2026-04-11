@@ -2,6 +2,7 @@
 #include "scheduler_ops.h"
 #include "RR.h"
 #include "HPF.h"
+#include "fcfs.h"
 #include <errno.h>
 #include <string.h>
 
@@ -20,6 +21,7 @@ typedef struct
 
     RRState rr_state;
     HPFState hpf_state;
+    FCFSState fcfs_state;
 
     FILE *log_file;
 
@@ -38,11 +40,6 @@ static void on_sigchld(int signum)
     (void)signum;
     child_exit_notified = 1;
 }
-
-typedef struct
-{
-    ReadyQueue *ready_queue;
-} FCFSState;
 
 static int scheduler_done(const SchedulerContext *ctx)
 {
@@ -390,72 +387,8 @@ static void write_perf_file(const SchedulerContext *ctx, int total_time)
     fclose(perf);
 }
 
-static void fcfs_ops_init(void *state, int argc, char *argv[])
-{
-    FCFSState *fcfs_state = (FCFSState *)state;
-    (void)argc;
-    (void)argv;
-
-    fcfs_state->ready_queue = queue_create();
-}
-
-static void fcfs_ops_enqueue(void *state, PCB proc)
-{
-    FCFSState *fcfs_state = (FCFSState *)state;
-    queue_push_tail(fcfs_state->ready_queue, proc);
-}
-
-static int fcfs_ops_dequeue(void *state, PCB *out)
-{
-    FCFSState *fcfs_state = (FCFSState *)state;
-    return queue_pop(fcfs_state->ready_queue, out);
-}
-
-static int fcfs_ops_has_ready(void *state)
-{
-    FCFSState *fcfs_state = (FCFSState *)state;
-    return fcfs_state->ready_queue->size > 0;
-}
-
-static int fcfs_ops_should_preempt(void *state, const PCB *running)
-{
-    (void)state;
-    (void)running;
-    return 0;
-}
-
-static void fcfs_ops_on_dispatch(void *state)
-{
-    (void)state;
-}
-
-static void fcfs_ops_on_tick(void *state)
-{
-    (void)state;
-}
-
-static ReadyQueue *fcfs_ops_get_ready_queue(void *state)
-{
-    FCFSState *fcfs_state = (FCFSState *)state;
-    return fcfs_state->ready_queue;
-}
-
-static void fcfs_bind_ops(SchedulerOps *ops)
-{
-    ops->init = fcfs_ops_init;
-    ops->enqueue = fcfs_ops_enqueue;
-    ops->dequeue = fcfs_ops_dequeue;
-    ops->has_ready = fcfs_ops_has_ready;
-    ops->should_preempt = fcfs_ops_should_preempt;
-    ops->on_dispatch = fcfs_ops_on_dispatch;
-    ops->on_tick = fcfs_ops_on_tick;
-    ops->get_ready_queue = fcfs_ops_get_ready_queue;
-}
-
 static int setup_ops(SchedulerContext *ctx, int argc, char *argv[])
 {
-    FCFSState *fcfs_state;
-
     memset(&ctx->ops, 0, sizeof(ctx->ops));
 
     if (ctx->algo == ALGO_HPF)
@@ -471,13 +404,7 @@ static int setup_ops(SchedulerContext *ctx, int argc, char *argv[])
     else if (ctx->algo == ALGO_FCFS_2)
     {
         fcfs_bind_ops(&ctx->ops);
-        fcfs_state = (FCFSState *)malloc(sizeof(FCFSState));
-        if (!fcfs_state)
-        {
-            perror("malloc FCFSState");
-            return 0;
-        }
-        ctx->algo_state = fcfs_state;
+        ctx->algo_state = &ctx->fcfs_state;
         printf("[Scheduler] FCFS-2 selected: running temporary single-queue FCFS mode.\n");
     }
     else
@@ -501,11 +428,6 @@ static void cleanup_algo_state(SchedulerContext *ctx)
     }
     free(q);
 
-    if (ctx->algo == ALGO_FCFS_2)
-    {
-        /* FCFS fallback state is heap-allocated; RR/HPF states are owned by SchedulerContext. */
-        free(ctx->algo_state);
-    }
     ctx->algo_state = NULL;
 }
 
