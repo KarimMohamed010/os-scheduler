@@ -1,13 +1,6 @@
 #include "headers.h"
 
 int remainingtime;
-static volatile sig_atomic_t continued = 0;
-
-static void on_sigcont(int signum)
-{
-    (void)signum;
-    continued = 1;
-}
 
 int main(int agrc, char *argv[])
 {
@@ -28,26 +21,16 @@ int main(int agrc, char *argv[])
     initClk();
     last_clk = getClk();
 
-    if (signal(SIGCONT, on_sigcont) == SIG_ERR)
-    {
-        destroyClk(false);
-        return 1;
-    }
-
     while (remainingtime > 0)
     {
-        if (continued)
-        {
-            /* Ignore paused duration: runtime should only decrease while actually running. */
-            last_clk = getClk();
-            continued = 0;
-        }
-
         now = getClk();
         if (now > last_clk)
         {
-            /* Consume exactly the elapsed clock ticks to stay aligned with scheduler timing. */
-            remainingtime -= (now - last_clk);
+            /* Only consume one tick on consecutive time steps; larger gaps are paused intervals. */
+            if (now == last_clk + 1)
+            {
+                remainingtime--;
+            }
             last_clk = now;
         }
         else
