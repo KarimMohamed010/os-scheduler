@@ -208,7 +208,19 @@ static void dispatch_next(SchedulerContext *ctx, int now)
 static void finish_running(SchedulerContext *ctx, int now)
 {
     int turnaround;
+    int uncounted_ticks;
     double wta;
+
+    /*
+     * Child execution is clock-driven and can reach zero just before the scheduler
+     * handles SIGCHLD at a boundary tick. If that happens, `remaining` may still be
+     * positive here and the final consumed tick(s) were not reflected in busy_ticks.
+     */
+    uncounted_ticks = ctx->running.remaining;
+    if (uncounted_ticks > 0)
+    {
+        ctx->busy_ticks += uncounted_ticks;
+    }
 
     ctx->running.remaining = 0;
     ctx->running.finished = 1;
