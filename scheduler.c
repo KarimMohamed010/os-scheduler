@@ -73,17 +73,6 @@ static void log_event(SchedulerContext *ctx, int time, const char *state, const 
                 ta,
                 wta);
     }
-    else if (strcmp(state, "arrived") == 0)
-    {
-        fprintf(ctx->log_file,
-                "At time %d process %d arrived arr %d total %d remain %d wait %d\n",
-                time,
-                proc->id,
-                proc->arrival,
-                proc->runtime,
-                proc->remaining,
-                proc->waiting);
-    }
     else
     {
         fprintf(ctx->log_file,
@@ -135,7 +124,6 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
 
             ctx->ops.enqueue(ctx->algo_state, proc);
             ctx->total_processes++;
-            log_event(ctx, now, "arrived", &proc);
             arrivals++;
         }
         else if (msg.mtype == 2)
