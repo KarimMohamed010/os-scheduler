@@ -12,6 +12,7 @@ typedef struct
     int algo;
     int all_received;
     int has_running;
+    int finish_pending;
     int last_clk;
     int next_dispatch_time;
 
@@ -32,14 +33,6 @@ typedef struct
     double total_wta;
     double total_wta_sq;
 } SchedulerContext;
-
-static volatile sig_atomic_t child_exit_notified = 0;
-
-static void on_sigchld(int signum)
-{
-    (void)signum;
-    child_exit_notified = 1;
-}
 
 static int scheduler_done(const SchedulerContext *ctx)
 {
@@ -190,6 +183,7 @@ static void dispatch_next(SchedulerContext *ctx, int now)
 
     ctx->running = next;
     ctx->has_running = 1;
+    ctx->finish_pending = 0;
     ctx->ops.on_dispatch(ctx->algo_state);
 }
 
@@ -230,8 +224,46 @@ static void finish_running(SchedulerContext *ctx, int now)
     log_event(ctx, now, "finished", &ctx->running);
 
     ctx->has_running = 0;
+    ctx->finish_pending = 0;
     ctx->running.id = -1;
     ctx->next_dispatch_time = now + 1;
+}
+
+static int settle_pending_finish(SchedulerContext *ctx, int now)
+{
+    int status;
+    pid_t done;
+
+    if (!ctx->has_running || !ctx->finish_pending)
+    {
+        return 0;
+    }
+
+    done = waitpid(ctx->running.pid, &status, WNOHANG);
+    if (done == 0)
+    {
+        kill(ctx->running.pid, SIGKILL);
+
+        do
+        {
+            done = waitpid(ctx->running.pid, &status, 0);
+        } while (done == -1 && errno == EINTR);
+    }
+
+    if (done == ctx->running.pid || (done == -1 && errno == ECHILD))
+    {
+        finish_running(ctx, now);
+        return 1;
+    }
+
+    if (done == -1 && errno == EINTR)
+    {
+        return 0;
+    }
+
+    /* Even if child reaping is delayed unexpectedly, keep scheduler model consistent. */
+    finish_running(ctx, now);
+    return 1;
 }
 
 static int check_running_finished(SchedulerContext *ctx, int now)
@@ -244,37 +276,21 @@ static int check_running_finished(SchedulerContext *ctx, int now)
         return 0;
     }
 
-    /*
-     * SIGCHLD may arrive just after the tick boundary check.
-     * Also, SIGCHLD can be coalesced around stop/continue events.
-     * To avoid finishing one tick late, poll waitpid once remaining hits zero
-     * even if no fresh SIGCHLD flag is set yet.
-     */
-    if (!child_exit_notified && ctx->running.remaining > 0)
-    {
-        return 0;
-    }
-
+    /* Poll non-blocking each boundary tick to avoid SIGCHLD ordering races. */
     done = waitpid(ctx->running.pid, &status, WNOHANG);
     if (done == ctx->running.pid)
     {
-        child_exit_notified = 0;
         finish_running(ctx, now);
         return 1;
     }
 
     if (done == 0)
     {
-        if (child_exit_notified)
-        {
-            child_exit_notified = 0;
-        }
         return 0;
     }
 
     if (done == -1 && errno == ECHILD)
     {
-        child_exit_notified = 0;
         /* Child already reaped elsewhere; treat it as finished to keep state consistent. */
         finish_running(ctx, now);
         return 1;
@@ -309,6 +325,14 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
 
     if (ctx->has_running)
     {
+        if (settle_pending_finish(ctx, now))
+        {
+            if (!ctx->has_running)
+            {
+                dispatch_next(ctx, now);
+            }
+        }
+
         if (check_running_finished(ctx, now))
         {
             /* If a process just finished, scheduler may dispatch another process at this same boundary. */
@@ -336,6 +360,12 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
             ctx->running.remaining--;
             ctx->busy_ticks++;
             ctx->ops.on_tick(ctx->algo_state);
+
+            if (ctx->running.remaining == 0)
+            {
+                /* Commit finish on the next boundary tick for deterministic log timing. */
+                ctx->finish_pending = 1;
+            }
         }
     }
 }
@@ -459,12 +489,6 @@ int main(int argc, char *argv[])
     memset(&ctx, 0, sizeof(ctx));
     ctx.running.id = -1;
 
-    if (signal(SIGCHLD, on_sigchld) == SIG_ERR)
-    {
-        perror("signal SIGCHLD");
-        return 1;
-    }
-
     if (argc < 2)
     {
         fprintf(stderr, "Usage: %s <algo> [quantum] [N] [M]\n", argv[0]);
@@ -509,7 +533,6 @@ int main(int argc, char *argv[])
 
             /* Even if time did not advance, keep pulling arrivals and dispatch idle CPU promptly. */
             arrivals = receive_current_processes(&ctx, now);
-            check_running_finished(&ctx, now);
 
             if (arrivals > 0 && ctx.has_running && ctx.ops.should_preempt(ctx.algo_state, &ctx.running))
             {
