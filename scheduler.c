@@ -32,12 +32,88 @@ typedef struct
     long long total_waiting;
     double total_wta;
     double total_wta_sq;
+
+    PCB *pending_arrivals;
+    int pending_count;
+    int pending_capacity;
 } SchedulerContext;
 
 static int scheduler_done(const SchedulerContext *ctx)
 {
     /* Stop only after end-of-input and all work (running + ready queues) is drained. */
-    return ctx->all_received && !ctx->has_running && !ctx->ops.has_ready(ctx->algo_state);
+    return ctx->all_received && !ctx->has_running && !ctx->ops.has_ready(ctx->algo_state) && ctx->pending_count == 0;
+}
+
+static void buffer_pending_arrival(SchedulerContext *ctx, PCB proc)
+{
+    int i;
+
+    if (ctx->pending_count == ctx->pending_capacity)
+    {
+        int new_capacity;
+        PCB *new_buf;
+
+        new_capacity = (ctx->pending_capacity > 0) ? (ctx->pending_capacity * 2) : 16;
+        new_buf = (PCB *)realloc(ctx->pending_arrivals, (size_t)new_capacity * sizeof(PCB));
+        if (!new_buf)
+        {
+            perror("realloc pending_arrivals");
+            exit(1);
+        }
+
+        ctx->pending_arrivals = new_buf;
+        ctx->pending_capacity = new_capacity;
+    }
+
+    i = ctx->pending_count;
+    while (i > 0)
+    {
+        PCB *prev = &ctx->pending_arrivals[i - 1];
+
+        if (prev->arrival < proc.arrival)
+        {
+            break;
+        }
+        if (prev->arrival == proc.arrival && prev->id <= proc.id)
+        {
+            break;
+        }
+
+        ctx->pending_arrivals[i] = ctx->pending_arrivals[i - 1];
+        i--;
+    }
+
+    ctx->pending_arrivals[i] = proc;
+    ctx->pending_count++;
+}
+
+static int admit_arrived_processes(SchedulerContext *ctx, int now)
+{
+    int admitted = 0;
+
+    while (ctx->pending_count > 0)
+    {
+        PCB proc;
+
+        if (ctx->pending_arrivals[0].arrival > now)
+        {
+            break;
+        }
+
+        proc = ctx->pending_arrivals[0];
+        if (ctx->pending_count > 1)
+        {
+            memmove(&ctx->pending_arrivals[0],
+                    &ctx->pending_arrivals[1],
+                    (size_t)(ctx->pending_count - 1) * sizeof(PCB));
+        }
+        ctx->pending_count--;
+
+        ctx->ops.enqueue(ctx->algo_state, proc);
+        admitted++;
+    }
+
+    return admitted;
 }
 
 static void log_header(SchedulerContext *ctx)
@@ -99,7 +175,9 @@ static void refresh_waiting(PCB *proc, int now)
 static int receive_current_processes(SchedulerContext *ctx, int now)
 {
     Message msg;
-    int arrivals = 0;
+    int buffered = 0;
+
+    (void)now;
 
     /* Drain all currently available IPC messages without blocking this tick. */
     while (msgrcv(ctx->msgqid, &msg, sizeof(PCB), 0, IPC_NOWAIT) != -1)
@@ -115,9 +193,9 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
             proc.finished = 0;
             proc.pid = -1;
 
-            ctx->ops.enqueue(ctx->algo_state, proc);
+            buffer_pending_arrival(ctx, proc);
             ctx->total_processes++;
-            arrivals++;
+            buffered++;
         }
         else if (msg.mtype == 2)
         {
@@ -130,7 +208,7 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
         perror("msgrcv");
     }
 
-    return arrivals;
+    return buffered;
 }
 
 static void dispatch_next(SchedulerContext *ctx, int now)
@@ -322,6 +400,7 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
     /* Tick boundary order: ingest arrivals, settle finish/preemption, dispatch, then execute this tick. */
     arrivals = receive_current_processes(ctx, now);
     (void)arrivals;
+    admit_arrived_processes(ctx, now);
 
     if (ctx->has_running)
     {
@@ -478,6 +557,11 @@ static void cleanup_algo_state(SchedulerContext *ctx)
     }
     free(q);
 
+    free(ctx->pending_arrivals);
+    ctx->pending_arrivals = NULL;
+    ctx->pending_count = 0;
+    ctx->pending_capacity = 0;
+
     ctx->algo_state = NULL;
 }
 
@@ -520,49 +604,25 @@ int main(int argc, char *argv[])
     initClk();
 
     ctx.last_clk = getClk();
-    receive_current_processes(&ctx, ctx.last_clk);
-    dispatch_next(&ctx, ctx.last_clk);
 
     while (1)
     {
         now = getClk();
-
-        if (now <= ctx.last_clk)
+        while (ctx.last_clk < now)
         {
-            int arrivals;
-
-            /* Even if time did not advance, keep pulling arrivals and dispatch idle CPU promptly. */
-            arrivals = receive_current_processes(&ctx, now);
-
-            if (arrivals > 0 && ctx.has_running && ctx.ops.should_preempt(ctx.algo_state, &ctx.running))
-            {
-                preempt_running(&ctx, now);
-            }
-
-            if (!ctx.has_running)
-            {
-                dispatch_next(&ctx, now);
-            }
-
+            scheduler_tick(&ctx, ctx.last_clk);
+            ctx.last_clk++;
             if (scheduler_done(&ctx))
             {
                 break;
             }
-
-            usleep(10000);
-            continue;
-        }
-
-        while (ctx.last_clk < now)
-        {
-            ctx.last_clk++;
-            scheduler_tick(&ctx, ctx.last_clk);
         }
 
         if (scheduler_done(&ctx))
         {
             break;
         }
+        usleep(10000);
     }
 
     write_perf_file(&ctx, ctx.last_clk);
