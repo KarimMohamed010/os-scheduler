@@ -239,7 +239,18 @@ static int check_running_finished(SchedulerContext *ctx, int now)
     int status;
     pid_t done;
 
-    if (!ctx->has_running || !child_exit_notified)
+    if (!ctx->has_running)
+    {
+        return 0;
+    }
+
+    /*
+     * SIGCHLD may arrive just after the tick boundary check.
+     * Also, SIGCHLD can be coalesced around stop/continue events.
+     * To avoid finishing one tick late, poll waitpid once remaining hits zero
+     * even if no fresh SIGCHLD flag is set yet.
+     */
+    if (!child_exit_notified && ctx->running.remaining > 0)
     {
         return 0;
     }
@@ -254,7 +265,11 @@ static int check_running_finished(SchedulerContext *ctx, int now)
 
     if (done == 0)
     {
-        child_exit_notified = 0;
+        if (child_exit_notified)
+        {
+            child_exit_notified = 0;
+        }
+        return 0;
     }
 
     if (done == -1 && errno == ECHILD)
@@ -263,6 +278,11 @@ static int check_running_finished(SchedulerContext *ctx, int now)
         /* Child already reaped elsewhere; treat it as finished to keep state consistent. */
         finish_running(ctx, now);
         return 1;
+    }
+
+    if (done == -1 && errno == EINTR)
+    {
+        return 0;
     }
 
     return 0;

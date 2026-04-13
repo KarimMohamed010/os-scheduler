@@ -35,7 +35,7 @@ int main(int agrc, char *argv[])
         }
         else
         {
-            usleep(1000);
+            usleep(10000);
         }
     }
 
