@@ -19,26 +19,39 @@
  *  Carried through message queues and kept alive in the
  *  scheduler's ready queue for the whole process lifetime.
  * ========================================================= */
-typedef struct
-{
-    int id;       /* unique process id from input file  */
-    int arrival;  /* arrival time (clock ticks)         */
-    int runtime;  /* original burst time                */
-    int priority; /* 0 = highest, 10 = lowest           */
+// typedef struct
+// {
+//     int id;       /* unique process id from input file  */
+//     int arrival;  /* arrival time (clock ticks)         */
+//     int runtime;  /* original burst time                */
+//     int priority; /* 0 = highest, 10 = lowest           */
 
-    /* fields filled and maintained by the scheduler */
-    int remaining;   /* remaining burst time               */
-    int waiting;     /* total time spent in ready queue    */
-    int start_time;  /* first time the process ran         */
-    int finish_time; /* clock tick when process finished   */
+//     /* fields filled and maintained by the scheduler */
+//     int remaining;   /* remaining burst time               */
+//     int waiting;     /* total time spent in ready queue    */
+//     int start_time;  /* first time the process ran         */
+//     int finish_time; /* clock tick when process finished   */
 
-    pid_t pid; /* OS pid of the forked process.c     */
+//     pid_t pid; /* OS pid of the forked process.c     */
 
-    /* state flags */
-    int started;  /* 1 after first dispatch             */
-    int finished; /* 1 after process sends finish sig   */
+//     /* state flags */
+//     int started;  /* 1 after first dispatch             */
+//     int finished; /* 1 after process sends finish sig   */
+// } PCB;
+typedef struct {
+    int id;
+    int arrival;
+    int runtime; // The original runtime (never changes)
+    int priority;
+    int remaining;     // Decrements as it runs
+    int waiting;
+    int start_time;    // First time it ever ran
+    int last_start_time; // The time it last RESUMED (for preemption calc)
+    int finish_time;
+    int pid;
+    int started;       // Flag: 0 if never forked, 1 if already running/stopped
+    int finished;
 } PCB;
-
 /* =========================================================
  *  Message sent from Process Generator → Scheduler
  *  via System V message queue (msgget / msgsnd / msgrcv).
