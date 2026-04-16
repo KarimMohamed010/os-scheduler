@@ -1,9 +1,32 @@
 #include "headers.h"
 #include "shared.h"
+#include <errno.h>
 #include <string.h>
 
 static int msgqid = -1;        /* System-V message queue id          */
+static int tick_semid = -1;    /* System-V semaphore id for tick sync */
 static PCB *proc_table = NULL; /* Heap-allocated process array       */
+
+
+static int semaphore_up(int semid)
+{
+    struct sembuf op;
+    op.sem_num = 0;
+    op.sem_op = 1;
+    op.sem_flg = 0;
+
+    while (semop(semid, &op, 1) == -1)
+    {
+        if (errno == EINTR)
+        {
+            continue;
+        }
+        perror("semop up");
+        return 0;
+    }
+
+    return 1;
+}
 
 void clearResources(int signum);
 
@@ -122,6 +145,19 @@ int main(int argc, char *argv[])
     }
     printf("[Generator] Message queue created (id=%d, key=%d)\n", msgqid, MSG_KEY);
 
+    tick_semid = semget(TICK_SYNC_SEM_KEY, 1, IPC_CREAT | 0644);
+    if (tick_semid == -1)
+    {
+        perror("semget: failed to create tick sync semaphore");
+        exit(EXIT_FAILURE);
+    }
+    if (semctl(tick_semid, 0, SETVAL, 0) == -1)
+    {
+        perror("semctl SETVAL");
+        exit(EXIT_FAILURE);
+    }
+    printf("[Generator] Tick sync semaphore created (id=%d, key=%d)\n", tick_semid, TICK_SYNC_SEM_KEY);
+
     /* ============================================================
      * 4a. Fork the clock process
      * ============================================================ */
@@ -225,6 +261,12 @@ int main(int argc, char *argv[])
             }
             next_idx++;
         }
+
+        /* Signal scheduler that this tick's generation phase is complete. */
+        if (!semaphore_up(tick_semid))
+        {
+            clearResources(0);
+        }
     }
 
     /* ============================================================
@@ -241,6 +283,12 @@ int main(int argc, char *argv[])
     else
     {
         printf("[Generator] Sentinel sent — no more processes.\n");
+    }
+
+    /* Wake scheduler one last time so it can consume the sentinel promptly. */
+    if (!semaphore_up(tick_semid))
+    {
+        clearResources(0);
     }
 
     /* ============================================================
@@ -274,6 +322,15 @@ void clearResources(int signum)
         else
             printf("[Generator] Message queue (id=%d) removed.\n", msgqid);
         msgqid = -1;
+    }
+
+    if (tick_semid != -1)
+    {
+        if (semctl(tick_semid, 0, IPC_RMID) == -1)
+            perror("semctl IPC_RMID");
+        else
+            printf("[Generator] Tick sync semaphore (id=%d) removed.\n", tick_semid);
+        tick_semid = -1;
     }
 
     /* Free heap memory */

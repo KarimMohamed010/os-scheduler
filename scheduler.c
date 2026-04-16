@@ -9,6 +9,7 @@
 typedef struct
 {
     int msgqid;
+    int tick_semid;
     int algo;
     int all_received;
     int has_running;
@@ -131,6 +132,27 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
     }
 
     return arrivals;
+}
+
+static int wait_for_generator_tick(SchedulerContext *ctx)
+{
+    struct sembuf op;
+
+    op.sem_num = 0;
+    op.sem_op = -1;
+    op.sem_flg = 0;
+
+    while (semop(ctx->tick_semid, &op, 1) == -1)
+    {
+        if (errno == EINTR)
+        {
+            continue;
+        }
+        perror("semop down");
+        return 0;
+    }
+
+    return 1;
 }
 
 static void dispatch_next(SchedulerContext *ctx, int now)
@@ -319,6 +341,12 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
 {
     int arrivals;
 
+    /* Wait until generator finishes sending this tick before consuming arrivals. */
+    if (!ctx->all_received && !wait_for_generator_tick(ctx))
+    {
+        return;
+    }
+
     /* Tick boundary order: ingest arrivals, settle finish/preemption, dispatch, then execute this tick. */
     arrivals = receive_current_processes(ctx, now);
     (void)arrivals;
@@ -503,6 +531,13 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    ctx.tick_semid = semget(TICK_SYNC_SEM_KEY, 1, 0666 | IPC_CREAT);
+    if (ctx.tick_semid == -1)
+    {
+        perror("semget");
+        return 1;
+    }
+
     if (!setup_ops(&ctx, argc, argv))
     {
         return 1;
@@ -520,38 +555,18 @@ int main(int argc, char *argv[])
     initClk();
 
     ctx.last_clk = getClk();
+    if (!wait_for_generator_tick(&ctx))
+    {
+        fclose(ctx.log_file);
+        cleanup_algo_state(&ctx);
+        return 1;
+    }
     receive_current_processes(&ctx, ctx.last_clk);
     dispatch_next(&ctx, ctx.last_clk);
 
     while (1)
     {
         now = getClk();
-
-        if (now <= ctx.last_clk)
-        {
-            int arrivals;
-
-            /* Even if time did not advance, keep pulling arrivals and dispatch idle CPU promptly. */
-            arrivals = receive_current_processes(&ctx, now);
-
-            if (arrivals > 0 && ctx.has_running && ctx.ops.should_preempt(ctx.algo_state, &ctx.running))
-            {
-                preempt_running(&ctx, now);
-            }
-
-            if (!ctx.has_running)
-            {
-                dispatch_next(&ctx, now);
-            }
-
-            if (scheduler_done(&ctx))
-            {
-                break;
-            }
-
-            usleep(10000);
-            continue;
-        }
 
         while (ctx.last_clk < now)
         {
