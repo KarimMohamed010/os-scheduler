@@ -122,12 +122,13 @@ typedef struct
 } FCFS2Control;
 
 // Added by Youssef
-typedef struct {
+typedef struct
+{
     PCB ready_queue[MAX_PROCESSES];
     int queue_size;
     int running_count;
     bool scheduler_ready;
-    bool all_processes_received;  /* Add this line */
+    bool all_processes_received; /* Add this line */
     bool all_processes_completed;
 } SharedMemory;
 

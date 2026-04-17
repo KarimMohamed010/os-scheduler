@@ -219,8 +219,8 @@ static void maybe_rebalance(MasterContext *ctx, int now)
         {
             return;
         }
-        load1 = ctx->ctrl->ready_remaining[0];
-        load2 = ctx->ctrl->ready_remaining[1];
+        load1 = ctx->ctrl->ready_remaining[0] + ctx->ctrl->running_remaining[0];
+        load2 = ctx->ctrl->ready_remaining[1] + ctx->ctrl->running_remaining[1];
         penalty_until = ctx->ctrl->penalty_until;
         if (!ctrl_unlock(ctx))
         {
@@ -339,13 +339,6 @@ static int process_tick_boundary(MasterContext *ctx, int tick)
         return 0;
     }
 
-    if (!route_pending_messages(ctx))
-    {
-        return 0;
-    }
-
-    maybe_rebalance(ctx, tick);
-
     if (!ctrl_lock(ctx))
     {
         return 0;
@@ -355,6 +348,13 @@ static int process_tick_boundary(MasterContext *ctx, int tick)
     {
         return 0;
     }
+
+    if (!route_pending_messages(ctx))
+    {
+        return 0;
+    }
+
+    maybe_rebalance(ctx, tick);
 
     for (i = 0; i < 2; i++)
     {

@@ -3,12 +3,11 @@
 #include <errno.h>
 #include <string.h>
 
-static int msgqid = -1;        /* System-V message queue id          */
-static int tick_semid = -1;    /* System-V semaphore id for tick sync */
+static int msgqid = -1;          /* System-V message queue id          */
+static int tick_semid = -1;      /* System-V semaphore id for tick sync */
 static int tick_done_semid = -1; /* FCFS-2 generator/master tick ack */
-static int start_semid = -1;   /* FCFS-2 generator/master startup sync */
-static PCB *proc_table = NULL; /* Heap-allocated process array       */
-
+static int start_semid = -1;     /* FCFS-2 generator/master startup sync */
+static PCB *proc_table = NULL;   /* Heap-allocated process array       */
 
 static int semaphore_up(int semid)
 {

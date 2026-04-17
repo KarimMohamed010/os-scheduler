@@ -25,6 +25,7 @@ typedef struct
     int finish_pending;
     int penalty_paused;
     int done_reported;
+    int done_tick;
     int last_clk;
     int next_dispatch_time;
     PCB running;
@@ -107,6 +108,7 @@ static int sem_down_idx(int semid, unsigned short sem_num)
 }
 
 static double fast_sqrt(double x);
+static double round_2dp_half_up(double value);
 
 typedef struct
 {
@@ -158,6 +160,7 @@ static void log_event(SchedulerContext *ctx, int time, const char *state, const 
     {
         ta = proc->finish_time - proc->arrival;
         wta = (double)ta / (double)((proc->runtime > 0) ? proc->runtime : 1);
+        wta = round_2dp_half_up(wta);
         fprintf(ctx->log_file,
                 "At time %d process %d finished arr %d total %d remain %d wait %d TA %d WTA %.2f\n",
                 time,
@@ -197,6 +200,15 @@ static void refresh_waiting(PCB *proc, int now)
         waiting = 0;
     }
     proc->waiting = waiting;
+}
+
+static double round_2dp_half_up(double value)
+{
+    if (value >= 0.0)
+    {
+        return (double)((long long)(value * 100.0 + 0.5)) / 100.0;
+    }
+    return (double)((long long)(value * 100.0 - 0.5)) / 100.0;
 }
 
 static int receive_current_processes(SchedulerContext *ctx, int now)
@@ -525,6 +537,7 @@ static void child_log_event(FCFS2ChildContext *ctx, int time, const char *state,
     {
         ta = proc->finish_time - proc->arrival;
         wta = (double)ta / (double)((proc->runtime > 0) ? proc->runtime : 1);
+        wta = round_2dp_half_up(wta);
         fprintf(ctx->log_file,
                 "At time %d process %d finished arr %d total %d remain %d wait %d TA %d WTA %.2f\n",
                 time,
@@ -939,6 +952,7 @@ static int child_handle_steal_commands(FCFS2ChildContext *ctx)
             int steal_from;
             int steal_to;
             int has_stolen;
+            int current_tick;
 
             if (!child_ctrl_lock(ctx))
             {
@@ -948,6 +962,7 @@ static int child_handle_steal_commands(FCFS2ChildContext *ctx)
             steal_from = ctx->ctrl->steal_from;
             steal_to = ctx->ctrl->steal_to;
             has_stolen = ctx->ctrl->has_stolen;
+            current_tick = ctx->ctrl->current_tick;
             if (!child_ctrl_unlock(ctx))
             {
                 return 0;
@@ -962,7 +977,7 @@ static int child_handle_steal_commands(FCFS2ChildContext *ctx)
                     if (fcfs_steal_tail(&ctx->fcfs_state, &stolen))
                     {
                         child_account_dequeue(ctx, &stolen);
-                        child_log_stolen(ctx, ctx->last_clk, stolen.id);
+                        child_log_stolen(ctx, current_tick, stolen.id);
 
                         if (!child_ctrl_lock(ctx))
                         {
@@ -1071,6 +1086,7 @@ static int child_handle_tick_grants(FCFS2ChildContext *ctx)
 {
     while (1)
     {
+        int tick;
         int sem_state = sem_try_down_idx(ctx->child_tick_semid, (unsigned short)ctx->cpu_index);
         if (sem_state < 0)
         {
@@ -1081,8 +1097,18 @@ static int child_handle_tick_grants(FCFS2ChildContext *ctx)
             break;
         }
 
-        ctx->last_clk++;
-        child_tick(ctx, ctx->last_clk);
+        if (!child_ctrl_lock(ctx))
+        {
+            return 0;
+        }
+        tick = ctx->ctrl->current_tick;
+        if (!child_ctrl_unlock(ctx))
+        {
+            return 0;
+        }
+
+        ctx->last_clk = tick;
+        child_tick(ctx, tick);
         if (!sem_up_idx(ctx->child_tick_ack_semid, 0))
         {
             return 0;
@@ -1224,6 +1250,7 @@ static int run_fcfs2_child(int argc, char *argv[])
                         break;
                     }
                     ctx.done_reported = 1;
+                    ctx.done_tick = ctx.last_clk;
                 }
             }
         }
@@ -1231,7 +1258,7 @@ static int run_fcfs2_child(int argc, char *argv[])
         usleep(1000);
     }
 
-    child_write_perf_file(&ctx, ctx.last_clk);
+    child_write_perf_file(&ctx, (ctx.done_tick > 0) ? ctx.done_tick : ctx.last_clk);
     fclose(ctx.log_file);
 
     while (queue_pop(ctx.fcfs_state.ready_queue, &ctx.running))
