@@ -798,6 +798,12 @@ static int child_apply_penalty(FCFS2ChildContext *ctx, int now)
             kill(ctx->running.pid, SIGSTOP);
             ctx->penalty_paused = 1;
         }
+
+        if (ctx->next_dispatch_time > now)
+        {
+            ctx->next_dispatch_time++;
+        }
+
         return 1;
     }
 
@@ -812,28 +818,26 @@ static int child_apply_penalty(FCFS2ChildContext *ctx, int now)
 
 static void child_tick(FCFS2ChildContext *ctx, int now)
 {
+    /* Process completions BEFORE penalty to ensure correct timing and dispatch calculations */
+    if (ctx->has_running)
+    {
+        int finished = 0;
+        if (ctx->finish_pending)
+        {
+            if (child_settle_pending_finish(ctx, now))
+            {
+                finished = 1;
+            }
+        }
+        else if (child_check_running_finished(ctx, now))
+        {
+            finished = 1;
+        }
+    }
+
     if (child_apply_penalty(ctx, now))
     {
         return;
-    }
-
-    if (ctx->has_running)
-    {
-        if (child_settle_pending_finish(ctx, now))
-        {
-            if (!ctx->has_running)
-            {
-                child_dispatch_next(ctx, now);
-            }
-        }
-
-        if (child_check_running_finished(ctx, now))
-        {
-            if (!ctx->has_running)
-            {
-                child_dispatch_next(ctx, now);
-            }
-        }
     }
 
     if (!ctx->has_running)
