@@ -453,7 +453,6 @@ static void preempt_running(SchedulerContext *ctx, int now)
 
 static void scheduler_tick(SchedulerContext *ctx, int now)
 {
-    int arrivals;
 
     /* Wait until generator finishes sending this tick before consuming arrivals. */
     if (!ctx->all_received && !wait_for_generator_tick(ctx))
@@ -462,8 +461,10 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
     }
 
     /* Tick boundary order: ingest arrivals, settle finish/preemption, dispatch, then execute this tick. */
-    arrivals = receive_current_processes(ctx, now);
-    (void)arrivals;
+    if(ctx->algo == ALGO_HPF)
+    {
+         receive_current_processes(ctx, now);
+    }
 
     if (ctx->has_running)
     {
@@ -488,6 +489,10 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
         {
             preempt_running(ctx, now);
         }
+    }
+    if(ctx->algo == ALGO_RR)
+    {
+        receive_current_processes(ctx, now);
     }
 
     if (!ctx->has_running)
