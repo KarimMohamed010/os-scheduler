@@ -9,6 +9,19 @@
 #define SHM_KEY_CLK 4321 /* clock shared memory  (used by clk.c)   */
 #define TICK_SYNC_SEM_KEY 1235
 
+/* FCFS-2 master/child coordination IPC keys */
+#define FCFS2_CTRL_SHM_KEY 2234
+#define FCFS2_CONSUME_SEM_KEY 2235
+#define FCFS2_ACK_SEM_KEY 2236
+#define FCFS2_STEAL_SEM_KEY 2237
+#define FCFS2_CTRL_MUTEX_SEM_KEY 2238
+#define FCFS2_TICK_DONE_SEM_KEY 2239
+#define FCFS2_START_SEM_KEY 2240
+#define FCFS2_CHILD_TICK_SEM_KEY 2241
+#define FCFS2_CHILD_TICK_ACK_SEM_KEY 2242
+
+#define FCFS2_STEAL_OVERHEAD_SEC 3
+
 #define ALGO_HPF 1    /* Preemptive Highest Priority First */
 #define ALGO_RR 2     /* Round Robin                        */
 #define ALGO_FCFS_2 3 /* 2-CPU FCFS with work stealing      */
@@ -86,6 +99,27 @@ typedef struct
     QNode *tail; /* append / steal from here */
     int size;
 } ReadyQueue;
+
+typedef struct
+{
+    int queue_size[2];
+    int ready_remaining[2];
+    int running_remaining[2];
+
+    int consume_turn; /* 1 or 2 */
+    int all_received;
+    int shutdown;
+    int child_ready[2];
+    int child_done[2];
+    int penalty_until;
+    int current_tick;
+
+    int steal_pending;
+    int steal_from; /* 1 or 2 */
+    int steal_to;   /* 1 or 2 */
+    int has_stolen;
+    PCB stolen_proc;
+} FCFS2Control;
 
 // Added by Youssef
 typedef struct {

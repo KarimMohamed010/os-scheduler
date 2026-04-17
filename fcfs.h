@@ -23,6 +23,11 @@ static inline int fcfs_dequeue(FCFSState *state, PCB *out)
     return queue_pop(state->ready_queue, out);
 }
 
+static inline int fcfs_steal_tail(FCFSState *state, PCB *out)
+{
+    return queue_steal_tail(state->ready_queue, out);
+}
+
 static inline int fcfs_has_ready(const FCFSState *state)
 {
     return state->ready_queue && state->ready_queue->size > 0;
