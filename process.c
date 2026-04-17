@@ -1,20 +1,45 @@
 #include "headers.h"
 
-/* Modify this file as needed*/
 int remainingtime;
 
-int main(int agrc, char * argv[])
+int main(int agrc, char *argv[])
 {
+    int last_clk;
+    int now;
+
+    if (agrc < 2)
+    {
+        return 1;
+    }
+
+    remainingtime = atoi(argv[1]);
+    if (remainingtime < 0)
+    {
+        remainingtime = 0;
+    }
+
     initClk();
-    
-    //TODO it needs to get the remaining time from somewhere
-    //remainingtime = ??;
+    last_clk = getClk();
+
     while (remainingtime > 0)
     {
-        // remainingtime = ??;
+        now = getClk();
+        if (now > last_clk)
+        {
+            /* Only consume one tick on consecutive time steps; larger gaps are paused intervals. */
+            if (now == last_clk + 1)
+            {
+                remainingtime--;
+            }
+            last_clk = now;
+        }
+        else
+        {
+            usleep(10000);
+        }
     }
-    
+
     destroyClk(false);
-    
+
     return 0;
 }
