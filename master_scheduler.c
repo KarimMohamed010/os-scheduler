@@ -26,6 +26,38 @@ typedef struct
     pid_t child_pids[2];
 } MasterContext;
 
+static MasterContext *g_master_ctx = NULL;
+
+static void cleanup_master_ipc(MasterContext *ctx);
+
+static void handle_sigint(int signum)
+{
+    int i;
+
+    (void)signum;
+
+    if (!g_master_ctx)
+    {
+        _exit(0);
+    }
+
+    if (g_master_ctx->ctrl)
+    {
+        g_master_ctx->ctrl->shutdown = 1;
+    }
+
+    for (i = 0; i < 2; i++)
+    {
+        if (g_master_ctx->child_pids[i] > 0)
+        {
+            kill(g_master_ctx->child_pids[i], SIGINT);
+        }
+    }
+
+    cleanup_master_ipc(g_master_ctx);
+    _exit(0);
+}
+
 static int sem_up_idx(int semid, unsigned short sem_num)
 {
     struct sembuf op;
@@ -554,6 +586,9 @@ int main(int argc, char *argv[])
     ctx.ctrl_mutex_semid = -1;
     ctx.tick_done_semid = -1;
     ctx.start_semid = -1;
+
+    g_master_ctx = &ctx;
+    signal(SIGINT, handle_sigint);
 
     if (argc < 4)
     {
