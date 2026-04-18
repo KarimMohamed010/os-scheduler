@@ -85,6 +85,7 @@ static int sem_down_idx(int semid, unsigned short sem_num)
 
 static int choose_consumer(const FCFS2Control *ctrl)
 {
+    /* Tie-break toward CPU 1 to keep routing deterministic when both queues look equally loaded. */
     if (ctrl->queue_size[0] <= ctrl->queue_size[1])
     {
         return 1;
@@ -194,6 +195,7 @@ static int route_pending_messages(MasterContext *ctx)
         {
             return 0;
         }
+        /* Hand off one message at a time so queue accounting stays synchronized with routing decisions. */
         ctx->ctrl->consume_turn = cpu;
         if (!ctrl_unlock(ctx))
         {
@@ -358,6 +360,7 @@ static int process_tick_boundary(MasterContext *ctx, int tick)
     {
         return 0;
     }
+    /* Publish the tick once so both children use the same boundary for logs and accounting. */
     ctx->ctrl->current_tick = tick;
     if (!ctrl_unlock(ctx))
     {
@@ -379,6 +382,7 @@ static int process_tick_boundary(MasterContext *ctx, int tick)
         }
     }
 
+    /* Wait for both children to finish their local tick before releasing the generator side. */
     if (!sem_down_idx(ctx->child_tick_ack_semid, 0) || !sem_down_idx(ctx->child_tick_ack_semid, 0))
     {
         return 0;

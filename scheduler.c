@@ -273,6 +273,7 @@ static void dispatch_next(SchedulerContext *ctx, int now)
 {
     PCB next;
 
+    /* A preemption/finish at time t should not let another process consume the same tick twice. */
     if (now < ctx->next_dispatch_time)
     {
         return;
@@ -370,6 +371,7 @@ static int settle_pending_finish(SchedulerContext *ctx, int now)
     int status;
     pid_t done;
 
+    /* `finish_pending` means the model reached zero during the previous tick and must be committed now. */
     if (!ctx->has_running || !ctx->finish_pending)
     {
         return 0;
@@ -453,7 +455,6 @@ static void preempt_running(SchedulerContext *ctx, int now)
 
 static void scheduler_tick(SchedulerContext *ctx, int now)
 {
-    int arrivals;
 
     /* Wait until generator finishes sending this tick before consuming arrivals. */
     if (!ctx->all_received && !wait_for_generator_tick(ctx))
@@ -462,8 +463,11 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
     }
 
     /* Tick boundary order: ingest arrivals, settle finish/preemption, dispatch, then execute this tick. */
-    arrivals = receive_current_processes(ctx, now);
-    (void)arrivals;
+    if(ctx->algo == ALGO_HPF)
+    {
+         /* HPF must see same-tick arrivals before the preemption decision. */
+         receive_current_processes(ctx, now);
+    }
 
     if (ctx->has_running)
     {
@@ -488,6 +492,11 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
         {
             preempt_running(ctx, now);
         }
+    }
+    if(ctx->algo == ALGO_RR)
+    {
+        /* RR defers new arrivals until after the current slice/preemption checks for this boundary. */
+        receive_current_processes(ctx, now);
     }
 
     if (!ctx->has_running)
@@ -793,6 +802,7 @@ static int child_apply_penalty(FCFS2ChildContext *ctx, int now)
 
     if (penalty_until > now)
     {
+        /* Work stealing charges a global pause; both CPUs must effectively lose these ticks. */
         if (ctx->has_running && !ctx->penalty_paused)
         {
             kill(ctx->running.pid, SIGSTOP);
@@ -924,6 +934,7 @@ static int child_handle_consume_grants(FCFS2ChildContext *ctx)
 
             if (!shutdown)
             {
+                /* The master decides which child may consume exactly one pending generator message. */
                 child_consume_one_message(ctx);
             }
         }
@@ -978,6 +989,7 @@ static int child_handle_steal_commands(FCFS2ChildContext *ctx)
                 {
                     PCB stolen;
 
+                    /* Steal from the tail so the donor keeps its oldest FCFS work in arrival order. */
                     if (fcfs_steal_tail(&ctx->fcfs_state, &stolen))
                     {
                         child_account_dequeue(ctx, &stolen);
@@ -1111,6 +1123,7 @@ static int child_handle_tick_grants(FCFS2ChildContext *ctx)
             return 0;
         }
 
+        /* Children advance only when the master publishes the authoritative clock tick. */
         ctx->last_clk = tick;
         child_tick(ctx, tick);
         if (!sem_up_idx(ctx->child_tick_ack_semid, 0))
@@ -1242,6 +1255,7 @@ static int run_fcfs2_child(int argc, char *argv[])
 
             if (all_received && !ctx.has_running && !fcfs_has_ready(&ctx.fcfs_state))
             {
+                /* Report completion once, after both the local queue and current process are drained. */
                 if (!ctx.done_reported)
                 {
                     if (!child_ctrl_lock(&ctx))
