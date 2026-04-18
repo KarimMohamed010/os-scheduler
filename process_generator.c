@@ -64,17 +64,16 @@ static void cleanup_stale_clock_shm(void)
 
 int main(int argc, char *argv[])
 {
-    (void)argc;
-    (void)argv; /* generator takes no command-line arguments */
+    const char *infile = (argc >= 2) ? argv[1] : "processes.txt";
     signal(SIGINT, clearResources);
 
     /* ============================================================
      * 1. Read processes.txt into a dynamic PCB array
      * ============================================================ */
-    FILE *fp = fopen("processes.txt", "r");
+    FILE *fp = fopen(infile, "r");
     if (!fp)
     {
-        perror("Cannot open processes.txt");
+        fprintf(stderr, "Cannot open %s\n", infile);
         exit(EXIT_FAILURE);
     }
 
@@ -120,7 +119,7 @@ int main(int argc, char *argv[])
         proc_table[count++] = p;
     }
     fclose(fp);
-    printf("[Generator] Loaded %d processes from processes.txt\n", count);
+    printf("[Generator] Loaded %d processes from %s\n", count, infile);
 
     /* ============================================================
      * 2. Ask user for scheduling algorithm and its parameters
