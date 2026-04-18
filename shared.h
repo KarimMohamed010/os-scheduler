@@ -118,6 +118,7 @@ typedef struct
     int steal_from; /* 1 or 2 */
     int steal_to;   /* 1 or 2 */
     int has_stolen;
+    int recheck_steal; /* 1 = recheck loads after penalty expires */
     PCB stolen_proc;
 } FCFS2Control;
 

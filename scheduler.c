@@ -809,11 +809,6 @@ static int child_apply_penalty(FCFS2ChildContext *ctx, int now)
             ctx->penalty_paused = 1;
         }
 
-        if (ctx->next_dispatch_time > now)
-        {
-            ctx->next_dispatch_time++;
-        }
-
         return 1;
     }
 
@@ -821,6 +816,16 @@ static int child_apply_penalty(FCFS2ChildContext *ctx, int now)
     {
         kill(ctx->running.pid, SIGCONT);
         ctx->penalty_paused = 0;
+    }
+
+    /*
+     * When penalty just ended AND no process is running (it finished before or
+     * during penalty), apply the 1-sec context-switch overhead on top of the
+     * steal penalty.  FAQ Q46/Q48: "3 steal + 1 switch = next starts at t+4".
+     */
+    if (!ctx->has_running && penalty_until == now && ctx->next_dispatch_time <= now)
+    {
+        ctx->next_dispatch_time = now + 1;
     }
 
     return 0;

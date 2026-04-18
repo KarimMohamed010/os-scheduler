@@ -202,122 +202,157 @@ static int route_pending_messages(MasterContext *ctx)
 
 static void maybe_rebalance(MasterContext *ctx, int now)
 {
-    if (ctx->N <= 0 || (now % ctx->N) != 0)
+    int should_check = 0;
+    int recheck_steal;
+    int penalty_until;
+    int load1;
+    int load2;
+    int diff;
+    int heavy;
+    int light;
+    int has_stolen;
+
+    if (!ctrl_lock(ctx))
+    {
+        return;
+    }
+    penalty_until = ctx->ctrl->penalty_until;
+    recheck_steal = ctx->ctrl->recheck_steal;
+    if (!ctrl_unlock(ctx))
     {
         return;
     }
 
-    while (1)
+    /* Don't check while penalty is still active — CPUs are frozen. */
+    if (penalty_until > now)
     {
-        int load1;
-        int load2;
-        int diff;
-        int heavy;
-        int light;
-        int has_stolen;
-        int penalty_until;
+        return;
+    }
 
+    /* Regular N-cycle check */
+    if (ctx->N > 0 && (now % ctx->N) == 0)
+    {
+        should_check = 1;
+    }
+
+    /* Post-steal recheck: penalty just expired, verify loads are balanced. */
+    if (recheck_steal && now >= penalty_until)
+    {
+        should_check = 1;
+    }
+
+    if (!should_check)
+    {
+        return;
+    }
+
+    /* Clear the recheck flag (we are checking now). */
+    if (!ctrl_lock(ctx))
+    {
+        return;
+    }
+    ctx->ctrl->recheck_steal = 0;
+    if (!ctrl_unlock(ctx))
+    {
+        return;
+    }
+
+    /* Read current loads (including running process per FAQ Q12). */
+    if (!ctrl_lock(ctx))
+    {
+        return;
+    }
+    load1 = ctx->ctrl->ready_remaining[0] + ctx->ctrl->running_remaining[0];
+    load2 = ctx->ctrl->ready_remaining[1] + ctx->ctrl->running_remaining[1];
+    if (!ctrl_unlock(ctx))
+    {
+        return;
+    }
+
+    diff = load1 - load2;
+    if (diff < 0)
+    {
+        diff = -diff;
+    }
+
+    if (diff <= ctx->M)
+    {
+        return;
+    }
+
+    if (load1 > load2)
+    {
+        heavy = 1;
+        light = 2;
+    }
+    else
+    {
+        heavy = 2;
+        light = 1;
+    }
+
+    if (!ctrl_lock(ctx))
+    {
+        return;
+    }
+    ctx->ctrl->steal_pending = 1;
+    ctx->ctrl->steal_from = heavy;
+    ctx->ctrl->steal_to = light;
+    ctx->ctrl->has_stolen = 0;
+    if (!ctrl_unlock(ctx))
+    {
+        return;
+    }
+
+    if (!sem_up_idx(ctx->steal_semid, (unsigned short)(heavy - 1)))
+    {
+        return;
+    }
+    if (!sem_down_idx(ctx->ack_semid, 0))
+    {
+        return;
+    }
+
+    if (!ctrl_lock(ctx))
+    {
+        return;
+    }
+    has_stolen = ctx->ctrl->has_stolen;
+    if (!ctrl_unlock(ctx))
+    {
+        return;
+    }
+
+    if (!has_stolen)
+    {
         if (!ctrl_lock(ctx))
         {
             return;
         }
-        load1 = ctx->ctrl->ready_remaining[0] + ctx->ctrl->running_remaining[0];
-        load2 = ctx->ctrl->ready_remaining[1] + ctx->ctrl->running_remaining[1];
-        penalty_until = ctx->ctrl->penalty_until;
-        if (!ctrl_unlock(ctx))
-        {
-            return;
-        }
-
-        if (penalty_until > now)
-        {
-            return;
-        }
-        diff = load1 - load2;
-
-        if (diff < 0)
-        {
-            diff = -diff;
-        }
-
-        if (diff <= ctx->M)
-        {
-            return;
-        }
-
-        if (load1 > load2)
-        {
-            heavy = 1;
-            light = 2;
-        }
-        else
-        {
-            heavy = 2;
-            light = 1;
-        }
-
-        if (!ctrl_lock(ctx))
-        {
-            return;
-        }
-        ctx->ctrl->steal_pending = 1;
-        ctx->ctrl->steal_from = heavy;
-        ctx->ctrl->steal_to = light;
-        ctx->ctrl->has_stolen = 0;
-        if (!ctrl_unlock(ctx))
-        {
-            return;
-        }
-
-        if (!sem_up_idx(ctx->steal_semid, (unsigned short)(heavy - 1)))
-        {
-            return;
-        }
-        if (!sem_down_idx(ctx->ack_semid, 0))
-        {
-            return;
-        }
-
-        if (!ctrl_lock(ctx))
-        {
-            return;
-        }
-        has_stolen = ctx->ctrl->has_stolen;
-        if (!ctrl_unlock(ctx))
-        {
-            return;
-        }
-
-        if (!has_stolen)
-        {
-            if (!ctrl_lock(ctx))
-            {
-                return;
-            }
-            ctx->ctrl->steal_pending = 0;
-            ctrl_unlock(ctx);
-            return;
-        }
-
-        if (!sem_up_idx(ctx->steal_semid, (unsigned short)(light - 1)))
-        {
-            return;
-        }
-        if (!sem_down_idx(ctx->ack_semid, 0))
-        {
-            return;
-        }
-
-        if (!ctrl_lock(ctx))
-        {
-            return;
-        }
-        ctx->ctrl->penalty_until = now + FCFS2_STEAL_OVERHEAD_SEC;
         ctx->ctrl->steal_pending = 0;
-        if (!ctrl_unlock(ctx))
-        {
-            return;
-        }
+        ctrl_unlock(ctx);
+        return;
+    }
+
+    if (!sem_up_idx(ctx->steal_semid, (unsigned short)(light - 1)))
+    {
+        return;
+    }
+    if (!sem_down_idx(ctx->ack_semid, 0))
+    {
+        return;
+    }
+
+    if (!ctrl_lock(ctx))
+    {
+        return;
+    }
+    ctx->ctrl->penalty_until = now + FCFS2_STEAL_OVERHEAD_SEC;
+    ctx->ctrl->steal_pending = 0;
+    ctx->ctrl->recheck_steal = 1; /* recheck after penalty expires */
+    if (!ctrl_unlock(ctx))
+    {
+        return;
     }
 }
 
