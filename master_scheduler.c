@@ -23,6 +23,21 @@ typedef struct
     int M;
     int last_clk;
 
+    /*
+     * Steal-check scheduling (Q38/Q43/Q46):
+     *   next_N_check : next regular N-multiple at which to check balance.
+     *   recheck_at   : if > 0, a re-check is scheduled at this tick
+     *                  (set after every steal; cleared after a clean re-check).
+     * Regular N-checks are suppressed while recheck_at > 0 so that the
+     * re-check chain (steal → +3 → re-check → steal → +3 → …) runs to
+     * completion before the normal N-cadence resumes.
+     */
+    int next_N_check;
+    int recheck_at;
+    int recheck_heavy;  /* CPU id (1 or 2) that was the heavy side of the last steal.
+                         * During a re-check we only steal if that SAME CPU is still
+                         * heavier; if the direction has flipped we stop the chain. */
+
     pid_t child_pids[2];
 } MasterContext;
 
@@ -234,123 +249,123 @@ static int route_pending_messages(MasterContext *ctx)
 
 static void maybe_rebalance(MasterContext *ctx, int now)
 {
-    if (ctx->N <= 0 || (now % ctx->N) != 0)
+    int is_regular_check;
+    int is_recheck;
+    int load1, load2, diff;
+    int heavy, light;
+    int has_stolen;
+    int penalty_until;
+
+    if (ctx->N <= 0)
     {
         return;
     }
 
-    while (1)
+    is_regular_check = (ctx->recheck_at == 0) && (now == ctx->next_N_check);
+    is_recheck       = (ctx->recheck_at > 0)  && (now == ctx->recheck_at);
+
+    if (!is_regular_check && !is_recheck)
     {
-        int load1;
-        int load2;
-        int diff;
-        int heavy;
-        int light;
-        int has_stolen;
-        int penalty_until;
+        return;
+    }
 
-        if (!ctrl_lock(ctx))
-        {
-            return;
-        }
-        load1 = ctx->ctrl->ready_remaining[0] + ctx->ctrl->running_remaining[0];
-        load2 = ctx->ctrl->ready_remaining[1] + ctx->ctrl->running_remaining[1];
-        penalty_until = ctx->ctrl->penalty_until;
-        if (!ctrl_unlock(ctx))
-        {
-            return;
-        }
+    /* Advance the regular N-check pointer (may be overwritten if we steal). */
+    if (is_regular_check)
+    {
+        ctx->next_N_check = now + ctx->N;
+    }
 
-        if (penalty_until > now)
-        {
-            return;
-        }
-        diff = load1 - load2;
+    /* Do not steal while a penalty from a *previous* tick is still in effect. */
+    if (!ctrl_lock(ctx)) { return; }
+    load1        = ctx->ctrl->ready_remaining[0] + ctx->ctrl->running_remaining[0];
+    load2        = ctx->ctrl->ready_remaining[1] + ctx->ctrl->running_remaining[1];
+    penalty_until = ctx->ctrl->penalty_until;
+    if (!ctrl_unlock(ctx)) { return; }
 
-        if (diff < 0)
-        {
-            diff = -diff;
-        }
+    if (penalty_until > now)
+    {
+        return;
+    }
 
-        if (diff <= ctx->M)
-        {
-            return;
-        }
+    diff = load1 - load2;
+    if (diff < 0) { diff = -diff; }
 
-        if (load1 > load2)
+    if (diff <= ctx->M)
+    {
+        if (is_recheck)
         {
-            heavy = 1;
-            light = 2;
+            ctx->next_N_check = ((now / ctx->N) + 1) * ctx->N;
+        }
+        ctx->recheck_at    = 0;
+        ctx->recheck_heavy = 0;
+        return;
+    }
+
+    /* ── Imbalanced: perform one steal ── */
+    if (is_recheck)
+    {
+        if (ctx->recheck_heavy == 1 && load1 > load2)
+        {
+            heavy = 1; light = 2;   /* CPU1 still heavy: steal again */
+        }
+        else if (ctx->recheck_heavy == 2 && load2 > load1)
+        {
+            heavy = 2; light = 1;   /* CPU2 still heavy: steal again */
         }
         else
         {
-            heavy = 2;
-            light = 1;
-        }
-
-        if (!ctrl_lock(ctx))
-        {
-            return;
-        }
-        ctx->ctrl->steal_pending = 1;
-        ctx->ctrl->steal_from = heavy;
-        ctx->ctrl->steal_to = light;
-        ctx->ctrl->has_stolen = 0;
-        if (!ctrl_unlock(ctx))
-        {
-            return;
-        }
-
-        if (!sem_up_idx(ctx->steal_semid, (unsigned short)(heavy - 1)))
-        {
-            return;
-        }
-        if (!sem_down_idx(ctx->ack_semid, 0))
-        {
-            return;
-        }
-
-        if (!ctrl_lock(ctx))
-        {
-            return;
-        }
-        has_stolen = ctx->ctrl->has_stolen;
-        if (!ctrl_unlock(ctx))
-        {
-            return;
-        }
-
-        if (!has_stolen)
-        {
-            if (!ctrl_lock(ctx))
-            {
-                return;
-            }
-            ctx->ctrl->steal_pending = 0;
-            ctrl_unlock(ctx);
-            return;
-        }
-
-        if (!sem_up_idx(ctx->steal_semid, (unsigned short)(light - 1)))
-        {
-            return;
-        }
-        if (!sem_down_idx(ctx->ack_semid, 0))
-        {
-            return;
-        }
-
-        if (!ctrl_lock(ctx))
-        {
-            return;
-        }
-        ctx->ctrl->penalty_until = now + FCFS2_STEAL_OVERHEAD_SEC;
-        ctx->ctrl->steal_pending = 0;
-        if (!ctrl_unlock(ctx))
-        {
+            /* Direction flipped or balanced — stop the re-check chain. */
+            ctx->next_N_check = ((now / ctx->N) + 1) * ctx->N;
+            ctx->recheck_at   = 0;
+            ctx->recheck_heavy = 0;
             return;
         }
     }
+    else
+    {
+        /* Regular check: steal from whichever side is heavier. */
+        if (load1 > load2) { heavy = 1; light = 2; }
+        else               { heavy = 2; light = 1; }
+    }
+
+    if (!ctrl_lock(ctx)) { return; }
+    ctx->ctrl->steal_pending = 1;
+    ctx->ctrl->steal_from    = heavy;
+    ctx->ctrl->steal_to      = light;
+    ctx->ctrl->has_stolen    = 0;
+    if (!ctrl_unlock(ctx)) { return; }
+
+    /* Ask the heavy CPU to hand over its tail process. */
+    if (!sem_up_idx(ctx->steal_semid,  (unsigned short)(heavy - 1))) { return; }
+    if (!sem_down_idx(ctx->ack_semid, 0)) { return; }
+
+    if (!ctrl_lock(ctx)) { return; }
+    has_stolen = ctx->ctrl->has_stolen;
+    if (!ctrl_unlock(ctx)) { return; }
+
+    if (!has_stolen)
+    {
+        /* Nothing to steal from heavy CPU — stop the loop. */
+        if (!ctrl_lock(ctx)) { return; }
+        ctx->ctrl->steal_pending = 0;
+        ctrl_unlock(ctx);
+        ctx->recheck_at    = 0;
+        ctx->recheck_heavy = 0;
+        return;
+    }
+
+    /* Deliver the stolen process to the light CPU. */
+    if (!sem_up_idx(ctx->steal_semid,  (unsigned short)(light - 1))) { return; }
+    if (!sem_down_idx(ctx->ack_semid, 0)) { return; }
+
+    /* Apply 3-tick overhead and schedule re-check. */
+    if (!ctrl_lock(ctx)) { return; }
+    ctx->ctrl->penalty_until = now + FCFS2_STEAL_OVERHEAD_SEC;
+    ctx->ctrl->steal_pending = 0;
+    if (!ctrl_unlock(ctx)) { return; }
+
+    ctx->recheck_at    = now + FCFS2_STEAL_OVERHEAD_SEC;
+    ctx->recheck_heavy = heavy;   /* remember direction for the re-check */
 }
 
 static int process_tick_boundary(MasterContext *ctx, int tick)
@@ -604,6 +619,9 @@ int main(int argc, char *argv[])
 
     ctx.N = atoi(argv[2]);
     ctx.M = atoi(argv[3]);
+    ctx.next_N_check  = ctx.N;  /* first regular check at t=N */
+    ctx.recheck_at    = 0;      /* no re-check pending        */
+    ctx.recheck_heavy = 0;      /* 0 = not set                */
 
     ctx.msgqid = msgget(MSG_KEY, 0666 | IPC_CREAT);
     if (ctx.msgqid == -1)
