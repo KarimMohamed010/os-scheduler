@@ -3,6 +3,7 @@
 #include "RR.h"
 #include "HPF.h"
 #include "fcfs.h"
+#include "mmu.h"
 #include <errno.h>
 #include <string.h>
 
@@ -137,12 +138,22 @@ typedef struct
     long long total_waiting;
     double total_wta;
     double total_wta_sq;
+
+    /* ── Phase 2: memory management ── */
+    FILE *mem_log;                            /* memory.log handle         */
+    int K;                                     /* R-bit clear interval      */
+    int quantum_count;                         /* quantums elapsed          */
+    BlockedSlot blocked[MAX_BLOCKED];          /* blocked-for-disk slots    */
+    int blocked_count;
+    MemRequest requests[MAX_PROCESSES][MAX_REQUESTS]; /* per-process requests */
+    int request_counts[MAX_PROCESSES];          /* # requests per process   */
 } SchedulerContext;
 
 static int scheduler_done(const SchedulerContext *ctx)
 {
-    /* Stop only after end-of-input and all work (running + ready queues) is drained. */
-    return ctx->all_received && !ctx->has_running && !ctx->ops.has_ready(ctx->algo_state);
+    /* Stop only after end-of-input and all work (running + ready + blocked) is drained. */
+    return ctx->all_received && !ctx->has_running && !ctx->ops.has_ready(ctx->algo_state)
+           && ctx->blocked_count == 0;
 }
 
 static void log_header(SchedulerContext *ctx)
@@ -290,6 +301,15 @@ static void dispatch_next(SchedulerContext *ctx, int now)
         pid_t pid;
         char runtime_str[32];
 
+        /* Phase 2: allocate page table + page 0 for this process (RR only) */
+        if (ctx->algo == ALGO_RR && ctx->mem_log)
+        {
+            next.cpu_ticks_consumed = 0;
+            next.next_req_idx = 0;
+            next.state = PROC_RUNNING;
+            mmu_process_init(&next, now, ctx->mem_log);
+        }
+
         pid = fork();
         if (pid == -1)
         {
@@ -314,6 +334,7 @@ static void dispatch_next(SchedulerContext *ctx, int now)
     else
     {
         kill(next.pid, SIGCONT);
+        next.state = PROC_RUNNING;
         refresh_waiting(&next, now);
         log_event(ctx, now, "resumed", &next);
     }
@@ -359,6 +380,22 @@ static void finish_running(SchedulerContext *ctx, int now)
     ctx->total_wta_sq += (wta * wta);
 
     log_event(ctx, now, "finished", &ctx->running);
+
+    /* Phase 2: free all frames owned by this process */
+    if (ctx->algo == ALGO_RR && ctx->mem_log)
+    {
+        mmu_process_exit(ctx->running.id);
+    }
+
+    /* Phase 2: a process finishing counts as a quantum expiry for R-bit clearing */
+    if (ctx->algo == ALGO_RR && ctx->K > 0)
+    {
+        ctx->quantum_count++;
+        if (ctx->quantum_count % ctx->K == 0)
+        {
+            mmu_clear_r_bits();
+        }
+    }
 
     ctx->has_running = 0;
     ctx->finish_pending = 0;
@@ -445,12 +482,153 @@ static int check_running_finished(SchedulerContext *ctx, int now)
 static void preempt_running(SchedulerContext *ctx, int now)
 {
     kill(ctx->running.pid, SIGSTOP);
+    ctx->running.state = PROC_READY;
     refresh_waiting(&ctx->running, now);
     log_event(ctx, now, "stopped", &ctx->running);
     ctx->ops.enqueue(ctx->algo_state, ctx->running);
     ctx->has_running = 0;
     ctx->running.id = -1;
     ctx->next_dispatch_time = now + 1;
+
+    /* Phase 2: quantum expired → track for NRU R-bit clearing */
+    if (ctx->algo == ALGO_RR && ctx->K > 0)
+    {
+        ctx->quantum_count++;
+        if (ctx->quantum_count % ctx->K == 0)
+        {
+            mmu_clear_r_bits();
+        }
+    }
+}
+
+/* ── Phase 2: blocked queue helpers ── */
+
+static void blocked_tick_down(SchedulerContext *ctx, int now)
+{
+    int i;
+
+    for (i = 0; i < MAX_BLOCKED; i++)
+    {
+        if (!ctx->blocked[i].in_use)
+            continue;
+
+        ctx->blocked[i].ticks_remaining--;
+
+        if (ctx->blocked[i].ticks_remaining <= 0)
+        {
+            /* Disk I/O complete: commit the page into the page table */
+            mmu_complete_fault(&ctx->blocked[i].proc,
+                               ctx->blocked[i].fault_vpn,
+                               ctx->blocked[i].target_frame,
+                               ctx->blocked[i].fault_write,
+                               now, ctx->mem_log);
+
+            /* Re-queue the process */
+            ctx->blocked[i].proc.state = PROC_READY;
+            ctx->ops.enqueue(ctx->algo_state, ctx->blocked[i].proc);
+            ctx->blocked[i].in_use = 0;
+            ctx->blocked_count--;
+        }
+    }
+}
+
+static void block_running_for_fault(SchedulerContext *ctx, int now,
+                                     int fault_vpn, int target_frame,
+                                     int disk_ticks, int fault_write)
+{
+    int i;
+
+    /* Find a free blocked slot */
+    for (i = 0; i < MAX_BLOCKED; i++)
+    {
+        if (!ctx->blocked[i].in_use)
+            break;
+    }
+    if (i == MAX_BLOCKED)
+    {
+        fprintf(stderr, "[MMU] FATAL: no free blocked slot\n");
+        return;
+    }
+
+    /* Stop the child process */
+    kill(ctx->running.pid, SIGSTOP);
+
+    ctx->running.state = PROC_BLOCKED;
+
+    ctx->blocked[i].proc           = ctx->running;
+    ctx->blocked[i].ticks_remaining = disk_ticks;
+    ctx->blocked[i].fault_vpn      = fault_vpn;
+    ctx->blocked[i].target_frame   = target_frame;
+    ctx->blocked[i].fault_write    = fault_write;
+    ctx->blocked[i].in_use         = 1;
+    ctx->blocked_count++;
+
+    ctx->has_running = 0;
+    ctx->running.id = -1;
+    /* Context-switch overhead: next dispatch is delayed by 1 tick */
+    ctx->next_dispatch_time = now + 1;
+}
+
+/* Phase 2: check and handle memory requests for the running process */
+static void handle_memory_requests(SchedulerContext *ctx, int now)
+{
+    int pid;
+    int req_idx;
+    MemRequest *req;
+    int fault_vpn;
+    int pa;
+
+    if (!ctx->has_running)
+        return;
+    if (ctx->algo != ALGO_RR || !ctx->mem_log)
+        return;
+
+    pid = ctx->running.id;
+    if (pid < 0 || pid >= MAX_PROCESSES)
+        return;
+
+    req_idx = ctx->running.next_req_idx;
+
+    /* Process all requests that match current cpu_ticks_consumed */
+    while (req_idx < ctx->request_counts[pid])
+    {
+        req = &ctx->requests[pid][req_idx];
+
+        if (req->time != ctx->running.cpu_ticks_consumed)
+            break;
+
+        /* Try to translate the VA */
+        pa = mmu_translate(&ctx->running, req->va, req->is_write, &fault_vpn);
+
+        if (pa == -1)
+        {
+            /* Page fault! */
+            int disk_ticks;
+            int target_frame;
+
+            mmu_log_page_fault(ctx->mem_log, req->va, pid);
+
+            target_frame = mmu_handle_fault(&ctx->running, fault_vpn,
+                                             req->is_write, now,
+                                             ctx->mem_log, &disk_ticks);
+            if (target_frame == -1)
+            {
+                fprintf(stderr, "[MMU] FATAL: cannot handle fault for process %d\n", pid);
+                req_idx++;
+                ctx->running.next_req_idx = req_idx;
+                continue;
+            }
+
+            ctx->running.next_req_idx = req_idx + 1;
+            block_running_for_fault(ctx, now, fault_vpn, target_frame,
+                                    disk_ticks, req->is_write);
+            return;  /* Process is now blocked — stop processing requests */
+        }
+
+        /* Page hit — request served, move to next */
+        req_idx++;
+        ctx->running.next_req_idx = req_idx;
+    }
 }
 
 static void scheduler_tick(SchedulerContext *ctx, int now)
@@ -460,6 +638,12 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
     if (!ctx->all_received && !wait_for_generator_tick(ctx))
     {
         return;
+    }
+
+    /* Phase 2: advance blocked processes (disk I/O countdown) */
+    if (ctx->algo == ALGO_RR && ctx->mem_log)
+    {
+        blocked_tick_down(ctx, now);
     }
 
     /* Tick boundary order: ingest arrivals, settle finish/preemption, dispatch, then execute this tick. */
@@ -512,7 +696,14 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
             ctx->busy_ticks++;
             ctx->ops.on_tick(ctx->algo_state);
 
-            if (ctx->running.remaining == 0)
+            /* Phase 2: track CPU ticks consumed for memory request timing */
+            if (ctx->algo == ALGO_RR && ctx->mem_log)
+            {
+                ctx->running.cpu_ticks_consumed++;
+                handle_memory_requests(ctx, now);
+            }
+
+            if (ctx->has_running && ctx->running.remaining == 0)
             {
                 /* Commit finish on the next boundary tick for deterministic log timing. */
                 ctx->finish_pending = 1;
@@ -1400,6 +1591,55 @@ static void cleanup_algo_state(SchedulerContext *ctx)
     ctx->algo_state = NULL;
 }
 
+/* ── Phase 2: load per-process request files ── */
+static void load_request_files(SchedulerContext *ctx)
+{
+    int pid;
+    char fname[64];
+    FILE *fp;
+    char line[256];
+
+    memset(ctx->request_counts, 0, sizeof(ctx->request_counts));
+
+    for (pid = 0; pid < MAX_PROCESSES; pid++)
+    {
+        snprintf(fname, sizeof(fname), "requests%d.txt", pid);
+        fp = fopen(fname, "r");
+        if (!fp)
+            continue;  /* no request file for this process */
+
+        int count = 0;
+        while (fgets(line, sizeof(line), fp) && count < MAX_REQUESTS)
+        {
+            if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
+                continue;
+
+            int time_val;
+            char addr_str[32];
+            char rw_char[4];
+
+            if (sscanf(line, "%d %s %s", &time_val, addr_str, rw_char) != 3)
+                continue;
+
+            /* Parse binary address string to integer */
+            int va = 0;
+            int k;
+            for (k = 0; addr_str[k] != '\0'; k++)
+            {
+                va = (va << 1) | (addr_str[k] - '0');
+            }
+
+            ctx->requests[pid][count].time     = time_val;
+            ctx->requests[pid][count].va       = va;
+            ctx->requests[pid][count].is_write = (rw_char[0] == 'w' || rw_char[0] == 'W') ? 1 : 0;
+            count++;
+        }
+        ctx->request_counts[pid] = count;
+        fclose(fp);
+        printf("[Scheduler] Loaded %d requests from %s\n", count, fname);
+    }
+}
+
 int main(int argc, char *argv[])
 {
     SchedulerContext ctx;
@@ -1407,7 +1647,7 @@ int main(int argc, char *argv[])
 
     if (argc < 2)
     {
-        fprintf(stderr, "Usage: %s <algo> [quantum] [N] [M]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <algo> [quantum] [N] [M] [K]\n", argv[0]);
         return 1;
     }
 
@@ -1420,6 +1660,14 @@ int main(int argc, char *argv[])
     ctx.running.id = -1;
 
     ctx.algo = atoi(argv[1]);
+
+    /* Phase 2: parse K from argv[5] for RR */
+    if (ctx.algo == ALGO_RR && argc > 5)
+    {
+        ctx.K = atoi(argv[5]);
+        if (ctx.K < 1) ctx.K = 1;
+    }
+
     ctx.msgqid = msgget(MSG_KEY, 0666 | IPC_CREAT);
     if (ctx.msgqid == -1)
     {
@@ -1448,12 +1696,30 @@ int main(int argc, char *argv[])
     }
     log_header(&ctx);
 
+    /* Phase 2: initialise MMU and open memory.log for RR */
+    if (ctx.algo == ALGO_RR)
+    {
+        mmu_init();
+        ctx.mem_log = fopen("memory.log", "w");
+        if (!ctx.mem_log)
+        {
+            perror("fopen memory.log");
+            fclose(ctx.log_file);
+            cleanup_algo_state(&ctx);
+            return 1;
+        }
+        load_request_files(&ctx);
+        printf("[Scheduler] Phase 2 MMU initialised (K=%d, %d frames)\n",
+               ctx.K, PHYS_FRAMES);
+    }
+
     initClk();
 
     ctx.last_clk = getClk();
     if (!wait_for_generator_tick(&ctx))
     {
         fclose(ctx.log_file);
+        if (ctx.mem_log) fclose(ctx.mem_log);
         cleanup_algo_state(&ctx);
         return 1;
     }
@@ -1478,6 +1744,7 @@ int main(int argc, char *argv[])
 
     write_perf_file(&ctx, ctx.last_clk);
     fclose(ctx.log_file);
+    if (ctx.mem_log) fclose(ctx.mem_log);
     cleanup_algo_state(&ctx);
 
     destroyClk(true);

@@ -1,0 +1,3 @@
+#time addressInBinary r/w
+1	10	r
+2	10100	w
