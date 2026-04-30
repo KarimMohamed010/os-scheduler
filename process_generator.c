@@ -106,12 +106,22 @@ int main(int argc, char *argv[])
 
         PCB p;
         memset(&p, 0, sizeof(PCB));
-        /* Format: id  arrival  runtime  priority  (tab-separated) */
-        if (sscanf(line, "%d\t%d\t%d\t%d",
-                   &p.id, &p.arrival, &p.runtime, &p.priority) != 4)
+        /* Format: id  arrival  runtime  priority  base  limit  (tab-separated) */
         {
-            fprintf(stderr, "Warning: skipping malformed line: %s", line);
-            continue;
+            int fields = sscanf(line, "%d\t%d\t%d\t%d\t%d\t%d",
+                                &p.id, &p.arrival, &p.runtime, &p.priority,
+                                &p.base, &p.limit);
+            if (fields < 4)
+            {
+                fprintf(stderr, "Warning: skipping malformed line: %s", line);
+                continue;
+            }
+            /* If base/limit not present (Phase 1 file), default to 0 */
+            if (fields < 6)
+            {
+                p.base  = 0;
+                p.limit = 0;
+            }
         }
         p.remaining = p.runtime; /* initialise remaining = runtime   */
         p.started = 0;
@@ -128,6 +138,7 @@ int main(int argc, char *argv[])
     int quantum = 0; /* used by RR                */
     int N = 0;       /* check interval (2-CPU)    */
     int M = 0;       /* steal threshold (2-CPU)   */
+    int K = 0;       /* Phase 2: R-bit clear interval (quantums) */
 
     printf("\nChoose a scheduling algorithm:\n");
     printf("  %d - Preemptive Highest Priority First (HPF)\n", ALGO_HPF);
@@ -143,6 +154,13 @@ int main(int argc, char *argv[])
         if (quantum < 1)
         {
             fprintf(stderr, "Quantum must be >= 1\n");
+            exit(1);
+        }
+        printf("Enter R-bit clearing interval K (in quantums): ");
+        scanf("%d", &K);
+        if (K < 1)
+        {
+            fprintf(stderr, "K must be >= 1\n");
             exit(1);
         }
     }
@@ -250,11 +268,12 @@ int main(int argc, char *argv[])
      *     argv[2] = N
      *     argv[3] = M
      * ============================================================ */
-    char s_algo[16], s_q[16], s_n[16], s_m[16];
+    char s_algo[16], s_q[16], s_n[16], s_m[16], s_k[16];
     snprintf(s_algo, sizeof(s_algo), "%d", algo);
     snprintf(s_q, sizeof(s_q), "%d", quantum);
     snprintf(s_n, sizeof(s_n), "%d", N);
     snprintf(s_m, sizeof(s_m), "%d", M);
+    snprintf(s_k, sizeof(s_k), "%d", K);
 
     pid_t sched_pid = fork();
     if (sched_pid == -1)
@@ -271,7 +290,7 @@ int main(int argc, char *argv[])
         }
         else
         {
-            execl("./scheduler.out", "scheduler.out", s_algo, s_q, s_n, s_m, NULL);
+            execl("./scheduler.out", "scheduler.out", s_algo, s_q, s_n, s_m, s_k, NULL);
             perror("execl scheduler.out");
         }
         exit(EXIT_FAILURE);
