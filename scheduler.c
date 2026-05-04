@@ -145,6 +145,8 @@ typedef struct
 
     struct BlockedNode *blocked_head;
     FILE *memory_log;
+    int quantum_counter;   /* counts completed RR quantums for NRU R-bit reset */
+    int K;                 /* R-bit clear period in quantums (user input)       */
 } SchedulerContext;
 
 static int scheduler_done(const SchedulerContext *ctx)
@@ -153,6 +155,26 @@ static int scheduler_done(const SchedulerContext *ctx)
            !ctx->has_running &&
            !ctx->ops.has_ready(ctx->algo_state) &&
            ctx->blocked_head == NULL;
+}
+
+static void note_rr_quantum_boundary(SchedulerContext *ctx);
+
+static void account_running_tick(SchedulerContext *ctx)
+{
+    if (!ctx->has_running || ctx->running.remaining <= 0)
+    {
+        return;
+    }
+
+    ctx->running.cpu_ticks_consumed++;
+    ctx->running.remaining--;
+    ctx->busy_ticks++;
+    ctx->ops.on_tick(ctx->algo_state);
+
+    if (ctx->running.remaining == 0)
+    {
+        ctx->finish_pending = 1;
+    }
 }
 
 static void log_header(SchedulerContext *ctx)
@@ -309,6 +331,15 @@ static int handle_due_requests(SchedulerContext *ctx, int now)
             exit(EXIT_FAILURE);
         }
 
+        account_running_tick(ctx);
+        if (ctx->algo == ALGO_RR &&
+            ctx->rr_state.slice_used >= ctx->rr_state.quantum &&
+            ctx->running.remaining > 0)
+        {
+            note_rr_quantum_boundary(ctx);
+        }
+        p = &ctx->running;
+
         p->state = PROC_BLOCKED;
         p->next_req_idx++;
 
@@ -322,7 +353,7 @@ static int handle_due_requests(SchedulerContext *ctx, int now)
         ctx->has_running = 0;
         ctx->running.id = -1;
         ctx->finish_pending = 0;
-        ctx->next_dispatch_time = now + 1;
+        ctx->next_dispatch_time = now + FAULT_CHECK_TICKS + 1;
 
         return 1;
     }
@@ -365,13 +396,18 @@ static int load_requests_for_process(PCB *proc)
     char line[256];
     int idx = 0;
 
-    snprintf(infile, sizeof(infile), "requests%d.txt", proc->id);
+    snprintf(infile, sizeof(infile), "requests_%d.txt", proc->id);
 
     fp = fopen(infile, "r");
     if (!fp)
     {
-        fprintf(stderr, "Cannot open %s\n", infile);
-        exit(EXIT_FAILURE);
+        snprintf(infile, sizeof(infile), "requests%d.txt", proc->id);
+        fp = fopen(infile, "r");
+        if (!fp)
+        {
+            fprintf(stderr, "Cannot open requests_%d.txt\n", proc->id);
+            exit(EXIT_FAILURE);
+        }
     }
 
     proc->num_requests = 0;
@@ -403,7 +439,9 @@ static int load_requests_for_process(PCB *proc)
         proc->requests[idx].time = t;
         strncpy(proc->requests[idx].va_bin, address, sizeof(proc->requests[idx].va_bin) - 1);
         proc->requests[idx].va_bin[sizeof(proc->requests[idx].va_bin) - 1] = '\0';
-        proc->requests[idx].va = (int)strtol(address, NULL, 2);
+        proc->requests[idx].va = (int)strtol(address, NULL,
+                                             (strncmp(address, "0x", 2) == 0 ||
+                                              strncmp(address, "0X", 2) == 0) ? 0 : 2);
         proc->requests[idx].is_write = (rw == 'w' || rw == 'W');
         idx++;
     }
@@ -540,41 +578,30 @@ static void dispatch_next(SchedulerContext *ctx, int now)
 
     if (!next.started)
     {
-        pid_t pid;
-        char runtime_str[32];
-        
-        pid = fork();
-        if (pid == -1)
-        {
-            perror("fork process");
-            return;
-        }
-        
-        if (pid == 0)
-        {
-            snprintf(runtime_str, sizeof(runtime_str), "%d", next.runtime);
-            execl("./process.out", "process.out", runtime_str, NULL);
-            perror("execl process.out");
-            exit(1);
-        }
-        
-        next.pid = pid;
-        next.started = 1;
+        /* Process was already forked and SIGSTOP'd in receive_current_processes.
+         * Here we do first-dispatch bookkeeping and memory init only. */
+        next.started    = 1;
         next.start_time = now;
         next.cpu_ticks_consumed = 0;
         next.next_req_idx = 0;
         next.state = PROC_RUNNING;
-        
+
         if (mmu_process_init(&next, now, ctx->memory_log) == -1)
         {
             fprintf(stderr, "mmu_process_init failed for process %d\n", next.id);
             exit(EXIT_FAILURE);
         }
-        
+
         kill(next.pid, SIGCONT);
         refresh_waiting(&next, now);
         log_event(ctx, now, "started", &next);
-        next.started = 1;
+    }
+    else
+    {
+        /* Resuming a previously preempted process. */
+        kill(next.pid, SIGCONT);
+        refresh_waiting(&next, now);
+        log_event(ctx, now, "resumed", &next);
     }
 
     ctx->running = next;
@@ -616,6 +643,12 @@ static void finish_running(SchedulerContext *ctx, int now)
     ctx->total_waiting += ctx->running.waiting;
     ctx->total_wta += wta;
     ctx->total_wta_sq += (wta * wta);
+
+    /* Count quantum boundary on natural finish too */
+    if (ctx->algo == ALGO_RR)
+    {
+        note_rr_quantum_boundary(ctx);
+    }
 
     mmu_process_exit(ctx->running.id);
     log_event(ctx, now, "finished", &ctx->running);
@@ -713,6 +746,21 @@ static void preempt_running(SchedulerContext *ctx, int now)
     ctx->next_dispatch_time = now + 1;
 }
 
+static void note_rr_quantum_boundary(SchedulerContext *ctx)
+{
+    if (ctx->algo != ALGO_RR)
+    {
+        return;
+    }
+
+    ctx->quantum_counter++;
+    if (ctx->quantum_counter >= ctx->K)
+    {
+        mmu_clear_r_bits();
+        ctx->quantum_counter = 0;
+    }
+}
+
 static void scheduler_tick(SchedulerContext *ctx, int now)
 {
     if (!ctx->all_received && !wait_for_generator_tick(ctx))
@@ -750,7 +798,21 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
             }
         }
 
-        if (ctx->has_running && ctx->ops.should_preempt(ctx->algo_state, &ctx->running))
+        if (ctx->has_running && ctx->algo == ALGO_RR &&
+            ctx->rr_state.slice_used >= ctx->rr_state.quantum &&
+            ctx->running.remaining > 0)
+        {
+            note_rr_quantum_boundary(ctx);
+            if (ctx->ops.has_ready(ctx->algo_state))
+            {
+                preempt_running(ctx, now);
+            }
+            else
+            {
+                ctx->rr_state.slice_used = 0;
+            }
+        }
+        else if (ctx->has_running && ctx->ops.should_preempt(ctx->algo_state, &ctx->running))
         {
             preempt_running(ctx, now);
         }
@@ -768,7 +830,11 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
 
     if (ctx->has_running)
     {
-        /* Request time 0 must work before the first CPU tick is consumed. */
+        /* Check for due memory requests BEFORE consuming this tick.
+         * req->time is the number of CPU ticks already consumed when
+         * the request fires, so "consumed == req->time" means we are
+         * at the boundary where the request is due.
+         * This single check replaces the previous two-call pattern.    */
         if (handle_due_requests(ctx, now))
         {
             return;
@@ -776,20 +842,7 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
 
         if (ctx->running.remaining > 0)
         {
-            ctx->running.cpu_ticks_consumed++;
-            ctx->running.remaining--;
-            ctx->busy_ticks++;
-            ctx->ops.on_tick(ctx->algo_state);
-
-            if (handle_due_requests(ctx, now))
-            {
-                return;
-            }
-
-            if (ctx->running.remaining == 0)
-            {
-                ctx->finish_pending = 1;
-            }
+            account_running_tick(ctx);
         }
     }
 }
@@ -1679,6 +1732,11 @@ int main(int argc, char *argv[])
     ctx.running.id = -1;
 
     ctx.algo = atoi(argv[1]);
+    /* argv: [0]=scheduler [1]=algo [2]=quantum [3]=K */
+    ctx.K = (argc >= 4) ? atoi(argv[3]) : 1;
+    if (ctx.K < 1) ctx.K = 1;
+    ctx.quantum_counter = 0;
+
     ctx.msgqid = msgget(MSG_KEY, 0666 | IPC_CREAT);
     if (ctx.msgqid == -1)
     {

@@ -8,6 +8,7 @@ static int tick_semid = -1;      /* System-V semaphore id for tick sync */
 static int tick_done_semid = -1; /* FCFS-2 generator/master tick ack */
 static int start_semid = -1;     /* FCFS-2 generator/master startup sync */
 static PCB *proc_table = NULL;   /* Heap-allocated process array       */
+static int clk_pid_global = -1;
 
 static int semaphore_up(int semid)
 {
@@ -59,6 +60,35 @@ static void cleanup_stale_clock_shm(void)
     if (stale_shmid != -1)
     {
         shmctl(stale_shmid, IPC_RMID, NULL);
+    }
+}
+
+static void cleanup_stale_ipc(void)
+{
+    int stale_id;
+
+    stale_id = msgget(MSG_KEY, 0644);
+    if (stale_id != -1)
+    {
+        msgctl(stale_id, IPC_RMID, NULL);
+    }
+
+    stale_id = semget(TICK_SYNC_SEM_KEY, 1, 0644);
+    if (stale_id != -1)
+    {
+        semctl(stale_id, 0, IPC_RMID);
+    }
+
+    stale_id = semget(FCFS2_TICK_DONE_SEM_KEY, 1, 0644);
+    if (stale_id != -1)
+    {
+        semctl(stale_id, 0, IPC_RMID);
+    }
+
+    stale_id = semget(FCFS2_START_SEM_KEY, 1, 0644);
+    if (stale_id != -1)
+    {
+        semctl(stale_id, 0, IPC_RMID);
     }
 }
 
@@ -126,6 +156,7 @@ int main(int argc, char *argv[])
      * ============================================================ */
     int algo = 0;
     int quantum = 0; /* used by RR                */
+    int K = 1;       /* used by RR (R-bit clear)  */
     int N = 0;       /* check interval (2-CPU)    */
     int M = 0;       /* steal threshold (2-CPU)   */
 
@@ -143,6 +174,13 @@ int main(int argc, char *argv[])
         if (quantum < 1)
         {
             fprintf(stderr, "Quantum must be >= 1\n");
+            exit(1);
+        }
+        printf("Enter R-bit clear period K (in quantums): ");
+        scanf("%d", &K);
+        if (K < 1)
+        {
+            fprintf(stderr, "K must be >= 1\n");
             exit(1);
         }
     }
@@ -168,6 +206,8 @@ int main(int argc, char *argv[])
      * 3. Create the message queue BEFORE forking the scheduler
      *    so the scheduler can open it immediately on startup.
      * ============================================================ */
+    cleanup_stale_ipc();
+
     msgqid = msgget(MSG_KEY, IPC_CREAT | 0644);
     if (msgqid == -1)
     {
@@ -234,6 +274,7 @@ int main(int argc, char *argv[])
         perror("execl clk.out");
         exit(EXIT_FAILURE);
     }
+    clk_pid_global = clk_pid;
     printf("[Generator] Clock process forked (pid=%d)\n", clk_pid);
 
     /* ============================================================
@@ -250,11 +291,12 @@ int main(int argc, char *argv[])
      *     argv[2] = N
      *     argv[3] = M
      * ============================================================ */
-    char s_algo[16], s_q[16], s_n[16], s_m[16];
+    char s_algo[16], s_q[16], s_n[16], s_m[16], s_k[16];
     snprintf(s_algo, sizeof(s_algo), "%d", algo);
     snprintf(s_q, sizeof(s_q), "%d", quantum);
     snprintf(s_n, sizeof(s_n), "%d", N);
     snprintf(s_m, sizeof(s_m), "%d", M);
+    snprintf(s_k, sizeof(s_k), "%d", K);
 
     pid_t sched_pid = fork();
     if (sched_pid == -1)
@@ -271,7 +313,7 @@ int main(int argc, char *argv[])
         }
         else
         {
-            execl("./scheduler.out", "scheduler.out", s_algo, s_q, s_n, s_m, NULL);
+            execl("./scheduler.out", "scheduler.out", s_algo, s_q, s_k, s_n, s_m, NULL);
             perror("execl scheduler.out");
         }
         exit(EXIT_FAILURE);
@@ -397,9 +439,7 @@ int main(int argc, char *argv[])
      * ============================================================ */
     waitpid(sched_pid, NULL, 0);
 
-    /* Should not normally reach here (group kill fires first) */
-    free(proc_table);
-    destroyClk(true);
+    clearResources(0);
     return 0;
 }
 
@@ -410,6 +450,13 @@ void clearResources(int signum)
 {
     (void)signum; /* suppress unused-parameter warning */
     printf("\n[Generator] Caught signal — cleaning up IPC resources.\n");
+
+    if (clk_pid_global > 0)
+    {
+        kill(clk_pid_global, SIGINT);
+        waitpid(clk_pid_global, NULL, WNOHANG);
+        clk_pid_global = -1;
+    }
 
     /* Remove the message queue */
     if (msgqid != -1)
@@ -451,5 +498,6 @@ void clearResources(int signum)
         proc_table = NULL;
     }
 
+    destroyClk(false);
     exit(0);
 }

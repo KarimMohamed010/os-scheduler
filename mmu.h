@@ -26,6 +26,7 @@
 /* Disk timing (ticks) */
 #define DISK_ACCESS_TICKS  10  /* one disk transfer             */
 #define DISK_DIRTY_TICKS   20  /* write-back + load             */
+#define FAULT_CHECK_TICKS   1  /* in-memory fault detection     */
 
 /* =========================================================
  *  Frame table entry

@@ -230,41 +230,79 @@ int mmu_process_init(PCB *pcb, int now, FILE *log)
     int pt_frame;
     int first_data_frame;
 
-    (void)now;
-    (void)log;
-
-    if (!pcb || !is_valid_pid(pcb->id))
+    if (!pcb || !is_valid_pid(pcb->id) || pcb->limit <= 0 || pcb->limit > MAX_VPAGES)
     {
         return -1;
     }
 
+    /* Reset this process's page table entries */
     for (int vpn = 0; vpn < MAX_VPAGES; ++vpn)
     {
-        page_tables[pcb->id].entries[vpn].frame = -1;
+        page_tables[pcb->id].entries[vpn].frame   = -1;
         page_tables[pcb->id].entries[vpn].present = 0;
-        page_tables[pcb->id].entries[vpn].R = 0;
-        page_tables[pcb->id].entries[vpn].M = 0;
+        page_tables[pcb->id].entries[vpn].R       = 0;
+        page_tables[pcb->id].entries[vpn].M       = 0;
     }
 
-    pt_frame = reserve_frame_quiet();
-    if (pt_frame < 0)
+    /* Allocate page-table frame. */
+    pt_frame = mmu_alloc_frame();
+    if (pt_frame != -1)
     {
-        return -1;
+        /* Free frame found; log it. */
+        mmu_log_free_frame(log, pt_frame);
+    }
+    else
+    {
+        /* No free frame: use NRU eviction.
+         * Per spec Q8/Q10: no time penalty at startup regardless. */
+        pt_frame = select_nru_victim();
+        if (pt_frame < 0)
+        {
+            fprintf(stderr, "mmu_process_init: no frame available for page table of pid %d\n",
+                    pcb->id);
+            return -1;
+        }
+        /* Dirty victim write-back is silently discarded at startup (Q10) */
+        invalidate_pte_for_frame(&frame_table[pt_frame]);
+        clear_frame(&frame_table[pt_frame]);
+        /* No log line for NRU eviction at startup */
     }
 
     claim_frame(pt_frame, pcb->id, -1, 1, 0, 0);
     pcb->page_table_frame = pt_frame;
 
-    first_data_frame = reserve_frame_quiet();
-    if (first_data_frame < 0)
+    /* Allocate frame for virtual page 0. */
+    first_data_frame = mmu_alloc_frame();
+    if (first_data_frame != -1)
     {
-        mmu_free_frame(pt_frame);
-        pcb->page_table_frame = -1;
-        return -1;
+        /* Free frame found; log it. */
+        mmu_log_free_frame(log, first_data_frame);
+    }
+    else
+    {
+        /* No free frame: use NRU eviction (page-table frame now occupied, so
+         * it is correctly skipped by select_nru_victim via is_page_table flag) */
+        first_data_frame = select_nru_victim();
+        if (first_data_frame < 0)
+        {
+            /* Roll back PT frame */
+            clear_frame(&frame_table[pt_frame]);
+            pcb->page_table_frame = -1;
+            fprintf(stderr, "mmu_process_init: no frame available for page 0 of pid %d\n",
+                    pcb->id);
+            return -1;
+        }
+        invalidate_pte_for_frame(&frame_table[first_data_frame]);
+        clear_frame(&frame_table[first_data_frame]);
+        /* No log line for NRU eviction at startup */
     }
 
     commit_page_to_frame(pcb, 0, first_data_frame, 0);
-    pcb->state = PROC_READY;
+
+    /* Log the page-0 load; startup allocation has no time penalty. */
+    mmu_log_loaded(log, now, pcb->base + 0, pcb->id, first_data_frame);
+
+    pcb->state = PROC_RUNNING;
     return 0;
 }
 
@@ -336,7 +374,8 @@ int mmu_handle_fault(PCB *pcb, int vpn, int write,
     int frame;
     int victim;
 
-    if (!pcb || !is_valid_pid(pcb->id) || vpn < 0 || vpn >= MAX_VPAGES)
+    if (!pcb || !is_valid_pid(pcb->id) || vpn < 0 ||
+        vpn >= MAX_VPAGES || vpn >= pcb->limit)
     {
         return -1;
     }
@@ -348,7 +387,7 @@ int mmu_handle_fault(PCB *pcb, int vpn, int write,
         claim_frame(frame, pcb->id, vpn, 0, 0, 0);
         if (disk_ticks_out)
         {
-            *disk_ticks_out = DISK_ACCESS_TICKS;
+            *disk_ticks_out = FAULT_CHECK_TICKS + DISK_ACCESS_TICKS;
         }
         return frame;
     }
@@ -364,14 +403,14 @@ int mmu_handle_fault(PCB *pcb, int vpn, int write,
         mmu_log_swap_out(log, victim);
         if (disk_ticks_out)
         {
-            *disk_ticks_out = DISK_DIRTY_TICKS;
+            *disk_ticks_out = FAULT_CHECK_TICKS + DISK_DIRTY_TICKS;
         }
     }
     else
     {
         if (disk_ticks_out)
         {
-            *disk_ticks_out = DISK_ACCESS_TICKS;
+            *disk_ticks_out = FAULT_CHECK_TICKS + DISK_ACCESS_TICKS;
         }
     }
 
