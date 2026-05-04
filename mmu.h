@@ -103,7 +103,7 @@ typedef struct
  *  Global memory state  (defined in mmu.c, extern here)
  * ========================================================= */
 extern FrameEntry frame_table[PHYS_FRAMES];
-extern PageTable  page_tables[MAX_PROCESSES]; /* indexed by proc id */
+extern PageTable  page_tables[MAX_PROCESSES + 1]; /* process ids are 1..MAX_PROCESSES */
 
 /* =========================================================
  *  MMU API
@@ -189,7 +189,7 @@ void mmu_clear_r_bits(void);
 /* ── memory.log helpers ── */
 
 /* "PageFault upon VA <binary> from process <pid>" */
-void mmu_log_page_fault(FILE *log, int va, int pid);
+void mmu_log_page_fault(FILE *log, const char *va_bin, int pid);
 
 /* "Free Physical page <frame> allocated" */
 void mmu_log_free_frame(FILE *log, int frame);
