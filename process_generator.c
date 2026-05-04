@@ -106,9 +106,9 @@ int main(int argc, char *argv[])
 
         PCB p;
         memset(&p, 0, sizeof(PCB));
-        /* Format: id  arrival  runtime  priority  (tab-separated) */
-        if (sscanf(line, "%d\t%d\t%d\t%d",
-                   &p.id, &p.arrival, &p.runtime, &p.priority) != 4)
+        /* Format: id  arrival  runtime  priority  base  limit */
+        if (sscanf(line, "%d\t%d\t%d\t%d\t%d\t%d",
+                   &p.id, &p.arrival, &p.runtime, &p.priority, &p.base, &p.limit) != 6)
         {
             fprintf(stderr, "Warning: skipping malformed line: %s", line);
             continue;
@@ -337,12 +337,14 @@ int main(int argc, char *argv[])
             else
             {
                 printf("[Generator] t=%d  Sent process id=%d  arrival=%d  "
-                       "runtime=%d  priority=%d\n",
+                       "runtime=%d  priority=%d  base=%d  limit=%d\n",
                        clk,
                        proc_table[next_idx].id,
                        proc_table[next_idx].arrival,
                        proc_table[next_idx].runtime,
-                       proc_table[next_idx].priority);
+                       proc_table[next_idx].priority,
+                       proc_table[next_idx].base,
+                       proc_table[next_idx].limit);
             }
             next_idx++;
         }

@@ -37,6 +37,21 @@
 #define PROC_BLOCKED 2  /* blocked waiting for disk I/O */
 
 /* =========================================================
+ *  Phase 2: per-process memory access request
+ *  Loaded from  requests<id>.txt  by the scheduler.
+ *
+ *  time     – relative CPU ticks after first dispatch
+ *  va       – virtual address (parsed from binary string)
+ *  is_write – 1 = store, 0 = load
+ * ========================================================= */
+typedef struct
+{
+    int time;
+    int va;                 /* integer value for MMU translation */
+    char va_bin[11];        /* exact binary string for logging   */
+    int is_write;
+} MemRequest;
+/* =========================================================
  *  Process Control Block (PCB)
  *
  *  Phase 2 additions are grouped at the bottom so the
@@ -67,23 +82,11 @@ typedef struct
     int page_table_frame;   /* physical frame holding this PT       */
     int cpu_ticks_consumed; /* CPU ticks used since first dispatch  */
     int next_req_idx;       /* index into per-process request table */
+    MemRequest requests[MAX_REQUESTS];
+    int num_requests;
     int state;              /* PROC_READY / PROC_RUNNING / PROC_BLOCKED */
 } PCB;
 
-/* =========================================================
- *  Phase 2: per-process memory access request
- *  Loaded from  requests<id>.txt  by the scheduler.
- *
- *  time     – relative CPU ticks after first dispatch
- *  va       – virtual address (parsed from binary string)
- *  is_write – 1 = store, 0 = load
- * ========================================================= */
-typedef struct
-{
-    int time;
-    int va;
-    int is_write;
-} MemRequest;
 
 /* =========================================================
  *  Message (process generator → scheduler)
