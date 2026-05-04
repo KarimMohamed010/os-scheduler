@@ -419,31 +419,6 @@ static int load_requests_for_process(PCB *proc)
     return idx;
 }
 
-static void fire_due_requests(SchedulerContext *ctx, int now)
-{
-    PCB *p = &ctx->running;
-
-    while (p->next_req_idx < p->num_requests)
-    {
-        MemRequest *req = &p->requests[p->next_req_idx];
-
-        if (p->cpu_ticks_consumed != req->time)
-            break;
-
-        printf("[Scheduler] t=%d process=%d request fired: VA=%d mode=%s\n",
-               now,
-               p->id,
-               req->va,
-               req->is_write ? "write" : "read");
-
-        /* Stage 3 only: request is detected and registered.
-           Later, in MMU stage, this is where the actual VA translation
-           and page-fault handling will be called. */
-
-        p->next_req_idx++;
-    }
-}
-
 static void cleanup_algo_state(SchedulerContext *ctx)
 {
     ReadyQueue *q;
