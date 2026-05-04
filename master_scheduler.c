@@ -758,13 +758,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (!process_tick_boundary(&ctx, ctx.last_clk))
-    {
-        shutdown_children(&ctx);
-        cleanup_master_ipc(&ctx);
-        destroyClk(true);
-        return 1;
-    }
+
 
     while (1)
     {

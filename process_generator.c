@@ -306,7 +306,7 @@ int main(int argc, char *argv[])
      *    so we keep a cursor `next_idx` into the array.
      * ============================================================ */
     int next_idx = 0;  /* index of the next unsent process */
-    int prev_clk = -1; /* last observed clock value        */
+    int prev_clk = 0;/* last observed clock value        */
 
     while (next_idx < count)
     {

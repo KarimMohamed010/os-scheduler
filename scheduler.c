@@ -1451,14 +1451,7 @@ int main(int argc, char *argv[])
     initClk();
 
     ctx.last_clk = getClk();
-    if (!wait_for_generator_tick(&ctx))
-    {
-        fclose(ctx.log_file);
-        cleanup_algo_state(&ctx);
-        return 1;
-    }
-    receive_current_processes(&ctx, ctx.last_clk);
-    dispatch_next(&ctx, ctx.last_clk);
+
 
     while (1)
     {
