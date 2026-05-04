@@ -103,8 +103,7 @@ static int reserve_frame_quiet(void)
         return frame;
     }
 
-    /* Evict silently for page-table allocation / initial first-page loading.
-       This does not represent a demand-page fault, so it is not logged. */
+
     int victim = select_nru_victim();
     if (victim < 0)
     {

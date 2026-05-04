@@ -310,7 +310,7 @@ static int handle_due_requests(SchedulerContext *ctx, int now)
         }
 
         p->state = PROC_BLOCKED;
-        p->next_req_idx++;   /* important: do not re-trigger the same request after unblock */
+        p->next_req_idx++;
 
         if (p->pid > 0)
         {
@@ -338,6 +338,23 @@ static void free_blocked_queue(SchedulerContext *ctx)
         BlockedNode *tmp = ctx->blocked_head;
         ctx->blocked_head = ctx->blocked_head->next;
         free(tmp);
+    }
+}
+
+static void sort_requests_by_time(PCB *proc)
+{
+    for (int i = 1; i < proc->num_requests; ++i)
+    {
+        MemRequest key = proc->requests[i];
+        int j = i - 1;
+
+        while (j >= 0 && proc->requests[j].time > key.time)
+        {
+            proc->requests[j + 1] = proc->requests[j];
+            --j;
+        }
+
+        proc->requests[j + 1] = key;
     }
 }
 
@@ -392,6 +409,8 @@ static int load_requests_for_process(PCB *proc)
     }
 
     proc->num_requests = idx;
+    sort_requests_by_time(proc);
+
     fclose(fp);
 
     printf("[Scheduler] Loaded %d requests for process %d from %s\n",
@@ -746,8 +765,7 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
 
     if (ctx->has_running)
     {
-        /* Handle requests that are due before this CPU tick is consumed.
-           This supports request time 0 correctly. */
+        /* Request time 0 must work before the first CPU tick is consumed. */
         if (handle_due_requests(ctx, now))
         {
             return;
@@ -760,7 +778,6 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
             ctx->busy_ticks++;
             ctx->ops.on_tick(ctx->algo_state);
 
-            /* Handle requests due after this CPU tick. */
             if (handle_due_requests(ctx, now))
             {
                 return;
