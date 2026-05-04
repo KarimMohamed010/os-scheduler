@@ -230,6 +230,27 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
             proc.finished = 0;
             proc.pid = -1;
 
+            pid_t pid;
+            char runtime_str[32];
+
+            pid = fork();
+            if (pid == -1)
+            {
+                perror("fork process");
+                return -1;
+            }
+
+            if (pid == 0)
+            {
+                snprintf(runtime_str, sizeof(runtime_str), "%d", proc.runtime);
+                execl("./process.out", "process.out", runtime_str, NULL);
+                perror("execl process.out");
+                exit(1);
+            }
+
+            proc.pid = pid;
+            kill(pid, SIGSTOP);
+
             ctx->ops.enqueue(ctx->algo_state, proc);
             ctx->total_processes++;
             arrivals++;
@@ -286,30 +307,10 @@ static void dispatch_next(SchedulerContext *ctx, int now)
 
     if (!next.started)
     {
-        /* First dispatch creates the child process once; later dispatches resume it. */
-        pid_t pid;
-        char runtime_str[32];
-
-        pid = fork();
-        if (pid == -1)
-        {
-            perror("fork process");
-            return;
-        }
-
-        if (pid == 0)
-        {
-            snprintf(runtime_str, sizeof(runtime_str), "%d", next.runtime);
-            execl("./process.out", "process.out", runtime_str, NULL);
-            perror("execl process.out");
-            exit(1);
-        }
-
-        next.pid = pid;
-        next.started = 1;
-        next.start_time = now;
+        kill(next.pid, SIGCONT);
         refresh_waiting(&next, now);
         log_event(ctx, now, "started", &next);
+        next.started = 1;
     }
     else
     {
@@ -463,10 +464,10 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
     }
 
     /* Tick boundary order: ingest arrivals, settle finish/preemption, dispatch, then execute this tick. */
-    if(ctx->algo == ALGO_HPF)
+    if (ctx->algo == ALGO_HPF)
     {
-         /* HPF must see same-tick arrivals before the preemption decision. */
-         receive_current_processes(ctx, now);
+        /* HPF must see same-tick arrivals before the preemption decision. */
+        receive_current_processes(ctx, now);
     }
 
     if (ctx->has_running)
@@ -493,7 +494,7 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
             preempt_running(ctx, now);
         }
     }
-    if(ctx->algo == ALGO_RR)
+    if (ctx->algo == ALGO_RR)
     {
         /* RR defers new arrivals until after the current slice/preemption checks for this boundary. */
         receive_current_processes(ctx, now);
@@ -1451,7 +1452,6 @@ int main(int argc, char *argv[])
     initClk();
 
     ctx.last_clk = getClk();
-
 
     while (1)
     {
