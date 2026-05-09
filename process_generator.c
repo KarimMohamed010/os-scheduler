@@ -135,10 +135,23 @@ int main(int argc, char *argv[])
         }
 
         PCB p;
+        int parsed_fields;
+
         memset(&p, 0, sizeof(PCB));
-        /* Format: id  arrival  runtime  priority  base  limit */
-        if (sscanf(line, "%d\t%d\t%d\t%d\t%d\t%d",
-                   &p.id, &p.arrival, &p.runtime, &p.priority, &p.base, &p.limit) != 6)
+
+        /*
+         * Accept both project formats:
+         *   Phase 1: id arrival runtime priority
+         *   Phase 2: id arrival runtime priority base limit
+         */
+        parsed_fields = sscanf(line, "%d%d%d%d%d%d",
+                               &p.id, &p.arrival, &p.runtime, &p.priority, &p.base, &p.limit);
+        if (parsed_fields == 4)
+        {
+            p.base = 0;
+            p.limit = 1;
+        }
+        else if (parsed_fields != 6)
         {
             fprintf(stderr, "Warning: skipping malformed line: %s", line);
             continue;

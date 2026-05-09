@@ -395,8 +395,10 @@ static int load_requests_for_process(int pid, int id)
         fp = fopen(infile, "r");
         if (!fp)
         {
-            fprintf(stderr, "Cannot open requests_%d.txt\n", id);
-            exit(EXIT_FAILURE);
+            (void)pid;
+            pr->num_requests = 0;
+            pr->next_req_idx = 0;
+            return 0;
         }
     }
 
@@ -750,11 +752,6 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
         receive_current_processes(ctx, now);
     }
 
-    if (ctx->algo == ALGO_RR)
-    {
-        receive_current_processes(ctx, now);
-    }
-
     blocked_release_ready_processes(ctx, now);
 
     if (ctx->has_running)
@@ -796,7 +793,11 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
     }
     if (ctx->algo == ALGO_RR)
     {
-        /* RR defers new arrivals until after the current slice/preemption checks for this boundary. */
+        /*
+         * RR defers same-tick arrivals until after quantum/preemption handling.
+         * This preserves the FAQ ordering where a just-preempted process is
+         * re-enqueued before new arrivals that happen at the same boundary.
+         */
         receive_current_processes(ctx, now);
     }
 
