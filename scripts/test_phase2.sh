@@ -63,4 +63,38 @@ else
 fi
 
 echo "---------------------------------------------------"
+echo "Running Phase 2 Sample 3 (ignore out-of-range VA)"
+echo "---------------------------------------------------"
+cleanup
+rm -f requests_*.txt memory.log scheduler.log
+cp phase2_tc/sample3/* .
+
+echo -e "2\n5\n10\n" | ./process_generator.out processes.txt
+
+echo "Comparing memory.log for Sample 3..."
+if diff -q <(normalize_log memory.log) <(normalize_log phase2_expected/sample3_memory.log) >/dev/null; then
+    echo "[PASS] Sample 3 memory.log matches exactly."
+else
+    echo "[FAIL] Sample 3 memory.log differs."
+    diff -u <(normalize_log memory.log) <(normalize_log phase2_expected/sample3_memory.log)
+fi
+
+echo "---------------------------------------------------"
+echo "Running Phase 2 Sample 4 (invalid access ignored before valid fault)"
+echo "---------------------------------------------------"
+cleanup
+rm -f requests_*.txt memory.log scheduler.log
+cp phase2_tc/sample4/* .
+
+echo -e "2\n5\n10\n" | ./process_generator.out processes.txt
+
+echo "Comparing memory.log for Sample 4..."
+if diff -q <(normalize_log memory.log) <(normalize_log phase2_expected/sample4_memory.log) >/dev/null; then
+    echo "[PASS] Sample 4 memory.log matches exactly."
+else
+    echo "[FAIL] Sample 4 memory.log differs."
+    diff -u <(normalize_log memory.log) <(normalize_log phase2_expected/sample4_memory.log)
+fi
+
+echo "---------------------------------------------------"
 echo "Tests Done."

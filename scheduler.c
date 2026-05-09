@@ -321,6 +321,13 @@ static int handle_due_requests(SchedulerContext *ctx, int now)
             continue;
         }
 
+        /* Out-of-range virtual addresses are ignored per the Phase 2 FAQ. */
+        if (fault_vpn < 0 || fault_vpn >= p->limit)
+        {
+            pr->next_req_idx++;
+            continue;
+        }
+
         mmu_log_page_fault(ctx->memory_log, req->va_str, p->id);
 
         target_frame = mmu_handle_fault(p, fault_vpn, req->is_write,
