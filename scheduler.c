@@ -750,10 +750,10 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
         receive_current_processes(ctx, now);
     }
 
-    if (ctx->algo == ALGO_RR)
-    {
-        receive_current_processes(ctx, now);
-    }
+    // if (ctx->algo == ALGO_RR)
+    // {
+    //     receive_current_processes(ctx, now);
+    // }
 
     blocked_release_ready_processes(ctx, now);
 

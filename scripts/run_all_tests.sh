@@ -58,15 +58,18 @@ run_test() {
     elif echo "$base_name" | grep -q "rr"; then
         algo_choice="2"
         local q_val=$(echo "$base_name" | grep -o 'rr[0-9]*' | sed 's/rr//')
-        algo_args="${q_val}\n"
+        local k_val="1000"
+        algo_args="${q_val}\n${k_val}\n"
     else
         echo "ERROR: Unknown test type in filename: $base_name"
         exit 1
     fi
 
-    cp "$test_file" processes.txt
-    rm -f scheduler.log scheduler.perf scheduler_1.log scheduler_2.log scheduler_1.perf scheduler_2.perf
+    rm -f ./requests*.txt
 
+    if [[ -d empty_req ]]; then
+        cp empty_req/* .
+    fi
 
     local output_file="$TMP_DIR/${base_name}.out"
     
