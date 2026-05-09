@@ -752,7 +752,6 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
         receive_current_processes(ctx, now);
     }
 
-    blocked_release_ready_processes(ctx, now);
 
     if (ctx->has_running)
     {
@@ -791,6 +790,8 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
             preempt_running(ctx, now);
         }
     }
+    blocked_release_ready_processes(ctx, now);
+
     if (ctx->algo == ALGO_RR)
     {
         /*

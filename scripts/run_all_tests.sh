@@ -15,6 +15,14 @@ if [[ -f processes.txt ]]; then
     cp processes.txt "$ORIG_PROCESSES"
 fi
 
+mkdir -p "$TMP_DIR/hidden_requests"
+for req in requests_*.txt; do
+    if [[ -f "$req" ]]; then
+        mv "$req" "$TMP_DIR/hidden_requests/"
+    fi
+done
+
+
 cleanup() {
     pkill -f 'process_generator.out|master_scheduler.out|scheduler.out|clk.out|process.out' >/dev/null 2>&1 || true
     ipcrm -Q 1234 >/dev/null 2>&1 || true
@@ -28,6 +36,13 @@ cleanup() {
 
     if [[ -f "$ORIG_PROCESSES" ]]; then
         cp "$ORIG_PROCESSES" processes.txt
+    fi
+    if [[ -d "$TMP_DIR/hidden_requests" ]]; then
+        for req in "$TMP_DIR/hidden_requests"/requests_*.txt; do
+            if [[ -f "$req" ]]; then
+                mv "$req" .
+            fi
+        done
     fi
     rm -rf "$TMP_DIR"
 }
