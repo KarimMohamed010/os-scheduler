@@ -340,7 +340,7 @@ static int handle_due_requests(SchedulerContext *ctx, int now)
         if (p->pid > 0)
             kill(p->pid, SIGSTOP);
 
-        blocked_push(ctx, *p, disk_ticks + 1, fault_vpn, target_frame, req->is_write);
+        blocked_push(ctx, *p, disk_ticks, fault_vpn, target_frame, req->is_write);
 
         ctx->has_running = 0;
         ctx->running.id = -1;
