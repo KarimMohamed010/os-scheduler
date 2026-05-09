@@ -1398,7 +1398,7 @@ static void child_write_perf_file(const FCFS2ChildContext *ctx, int total_time)
     fprintf(perf, "CPU utilization = %.2f%%\n", cpu_util);
     fprintf(perf, "Avg WTA = %.2f\n", avg_wta);
     fprintf(perf, "Avg Waiting = %.2f\n", avg_wait);
-    fprintf(perf, "Std WTA = %.2f", std_wta);
+    fprintf(perf, "Std WTA = %.2f\n", std_wta);
     fclose(perf);
 }
 
@@ -1655,7 +1655,7 @@ static void write_perf_file(const SchedulerContext *ctx, int total_time)
     fprintf(perf, "CPU utilization = %.2f%%\n", cpu_util);
     fprintf(perf, "Avg WTA = %.2f\n", avg_wta);
     fprintf(perf, "Avg Waiting = %.2f\n", avg_wait);
-    fprintf(perf, "Std WTA = %.2f", std_wta);
+    fprintf(perf, "Std WTA = %.2f\n", std_wta);
 
     fclose(perf);
 }
