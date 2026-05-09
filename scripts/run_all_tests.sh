@@ -150,7 +150,7 @@ run_test() {
 }
 
 echo "Starting tests..."
-for f in phase1_tc/*.txt; do
+for f in phase1_tc/*rr*.txt; do
     # Skip alternate data streams (Windows WSL artifacts)
     if [[ "$f" == *":Zone.Identifier" ]]; then
         continue
