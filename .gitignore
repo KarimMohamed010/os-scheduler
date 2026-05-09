@@ -1,5 +1,10 @@
 *.out
 *.o
-./*.log
-./*.perf
-./*.txt
+*.log
+*.perf
+*.txt
+
+!phase1_tc/
+!phase2_tc/
+!phase2_expected/
+
