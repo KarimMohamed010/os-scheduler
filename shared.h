@@ -48,7 +48,7 @@ typedef struct
 {
     int time;
     int va;                 /* integer value for MMU translation */
-    char va_bin[11];        /* exact binary string for logging   */
+    char va_str[11];        /* exact binary string for logging   */
     int is_write;
 } MemRequest;
 /* =========================================================
@@ -81,12 +81,15 @@ typedef struct
     int limit;              /* number of virtual pages owned        */
     int page_table_frame;   /* physical frame holding this PT       */
     int cpu_ticks_consumed; /* CPU ticks used since first dispatch  */
-    int next_req_idx;       /* index into per-process request table */
-    MemRequest requests[MAX_REQUESTS];
-    int num_requests;
     int state;              /* PROC_READY / PROC_RUNNING / PROC_BLOCKED */
 } PCB;
 
+typedef struct
+{
+    int next_req_idx;
+    MemRequest requests[MAX_REQUESTS];
+    int num_requests;
+} ProcessRequests;
 
 /* =========================================================
  *  Message (process generator → scheduler)

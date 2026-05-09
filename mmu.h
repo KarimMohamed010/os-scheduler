@@ -190,7 +190,7 @@ void mmu_clear_r_bits(void);
 /* ── memory.log helpers ── */
 
 /* "PageFault upon VA <binary> from process <pid>" */
-void mmu_log_page_fault(FILE *log, const char *va_bin, int pid);
+void mmu_log_page_fault(FILE *log, const char *va_str, int pid);
 
 /* "Free Physical page <frame> allocated" */
 void mmu_log_free_frame(FILE *log, int frame);

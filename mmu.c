@@ -135,14 +135,14 @@ static void commit_page_to_frame(PCB *pcb, int vpn, int frame, int fault_write)
  *  memory.log helpers
  * ========================================================= */
 
-void mmu_log_page_fault(FILE *log, const char *va_bin, int pid)
+void mmu_log_page_fault(FILE *log, const char *va_str, int pid)
 {
     if (!log)
     {
         return;
     }
 
-    fprintf(log, "PageFault upon VA %s from process %d\n", va_bin, pid);
+    fprintf(log, "PageFault upon VA %s from process %d\n", va_str, pid);
     fflush(log);
 }
 

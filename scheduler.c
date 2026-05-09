@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <string.h>
 #include "mmu.h"
+static ProcessRequests proc_requests[MAX_PROCESSES + 1];
 typedef struct
 {
     int cpu_id;
@@ -300,28 +301,27 @@ static void blocked_release_ready_processes(SchedulerContext *ctx, int now)
 static int handle_due_requests(SchedulerContext *ctx, int now)
 {
     PCB *p = &ctx->running;
+    ProcessRequests *pr = &proc_requests[p->id];
 
-    while (p->next_req_idx < p->num_requests)
+    while (pr->next_req_idx < pr->num_requests)
     {
-        MemRequest *req = &p->requests[p->next_req_idx];
+        MemRequest *req = &pr->requests[pr->next_req_idx];
         int fault_vpn = -1;
         int phys_addr;
         int disk_ticks = 0;
         int target_frame;
 
         if (p->cpu_ticks_consumed < req->time)
-        {
             break;
-        }
 
         phys_addr = mmu_translate(p, req->va, req->is_write, &fault_vpn);
         if (phys_addr != -1)
         {
-            p->next_req_idx++;
+            pr->next_req_idx++;
             continue;
         }
 
-        mmu_log_page_fault(ctx->memory_log, req->va_bin, p->id);
+        mmu_log_page_fault(ctx->memory_log, req->va_str, p->id);
 
         target_frame = mmu_handle_fault(p, fault_vpn, req->is_write,
                                         now, ctx->memory_log, &disk_ticks);
@@ -332,28 +332,20 @@ static int handle_due_requests(SchedulerContext *ctx, int now)
         }
 
         account_running_tick(ctx);
-        if (ctx->algo == ALGO_RR &&
-            ctx->rr_state.slice_used >= ctx->rr_state.quantum &&
-            ctx->running.remaining > 0)
-        {
-            note_rr_quantum_boundary(ctx);
-        }
         p = &ctx->running;
 
         p->state = PROC_BLOCKED;
-        p->next_req_idx++;
+        pr->next_req_idx++;
 
         if (p->pid > 0)
-        {
             kill(p->pid, SIGSTOP);
-        }
 
-        blocked_push(ctx, *p, disk_ticks, fault_vpn, target_frame, req->is_write);
+        blocked_push(ctx, *p, disk_ticks + 1, fault_vpn, target_frame, req->is_write);
 
         ctx->has_running = 0;
         ctx->running.id = -1;
         ctx->finish_pending = 0;
-        ctx->next_dispatch_time = now + FAULT_CHECK_TICKS + 1;
+        ctx->next_dispatch_time = now + 2;
 
         return 1;
     }
@@ -372,46 +364,44 @@ static void free_blocked_queue(SchedulerContext *ctx)
     }
 }
 
-static void sort_requests_by_time(PCB *proc)
+static void sort_requests_by_time(ProcessRequests *pr)
 {
-    for (int i = 1; i < proc->num_requests; ++i)
+    for (int i = 1; i < pr->num_requests; ++i)
     {
-        MemRequest key = proc->requests[i];
+        MemRequest key = pr->requests[i];
         int j = i - 1;
-
-        while (j >= 0 && proc->requests[j].time > key.time)
+        while (j >= 0 && pr->requests[j].time > key.time)
         {
-            proc->requests[j + 1] = proc->requests[j];
+            pr->requests[j + 1] = pr->requests[j];
             --j;
         }
-
-        proc->requests[j + 1] = key;
+        pr->requests[j + 1] = key;
     }
 }
 
-static int load_requests_for_process(PCB *proc)
+static int load_requests_for_process(int pid, int id)
 {
     char infile[32];
     FILE *fp;
     char line[256];
     int idx = 0;
+    ProcessRequests *pr = &proc_requests[id];
 
-    snprintf(infile, sizeof(infile), "requests_%d.txt", proc->id);
-
+    snprintf(infile, sizeof(infile), "requests_%d.txt", id);
     fp = fopen(infile, "r");
     if (!fp)
     {
-        snprintf(infile, sizeof(infile), "requests%d.txt", proc->id);
+        snprintf(infile, sizeof(infile), "requests%d.txt", id);
         fp = fopen(infile, "r");
         if (!fp)
         {
-            fprintf(stderr, "Cannot open requests_%d.txt\n", proc->id);
+            fprintf(stderr, "Cannot open requests_%d.txt\n", id);
             exit(EXIT_FAILURE);
         }
     }
 
-    proc->num_requests = 0;
-    proc->next_req_idx = 0;
+    pr->num_requests = 0;
+    pr->next_req_idx = 0;
 
     while (fgets(line, sizeof(line), fp))
     {
@@ -420,40 +410,27 @@ static int load_requests_for_process(PCB *proc)
         char rw;
 
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
-        {
             continue;
-        }
-
         if (idx >= MAX_REQUESTS)
-        {
-            fprintf(stderr, "Warning: too many requests in %s, extra requests ignored\n", infile);
             break;
-        }
-
         if (sscanf(line, "%d %63s %c", &t, address, &rw) != 3)
-        {
-            fprintf(stderr, "Warning: skipping malformed line: %s", line);
             continue;
-        }
 
-        proc->requests[idx].time = t;
-        strncpy(proc->requests[idx].va_bin, address, sizeof(proc->requests[idx].va_bin) - 1);
-        proc->requests[idx].va_bin[sizeof(proc->requests[idx].va_bin) - 1] = '\0';
-        proc->requests[idx].va = (int)strtol(address, NULL,
-                                             (strncmp(address, "0x", 2) == 0 ||
-                                              strncmp(address, "0X", 2) == 0) ? 0 : 2);
-        proc->requests[idx].is_write = (rw == 'w' || rw == 'W');
+        pr->requests[idx].time = t;
+        strncpy(pr->requests[idx].va_str, address, sizeof(pr->requests[idx].va_str) - 1);
+        pr->requests[idx].va_str[sizeof(pr->requests[idx].va_str) - 1] = '\0';
+        pr->requests[idx].va = (int)strtol(address, NULL,
+                                           (strncmp(address, "0x", 2) == 0 ||
+                                            strncmp(address, "0X", 2) == 0)
+                                               ? 0
+                                               : 2);
+        pr->requests[idx].is_write = (rw == 'w' || rw == 'W');
         idx++;
     }
 
-    proc->num_requests = idx;
-    sort_requests_by_time(proc);
-
+    pr->num_requests = idx;
+    sort_requests_by_time(pr); /* see step 3 */
     fclose(fp);
-
-    printf("[Scheduler] Loaded %d requests for process %d from %s\n",
-           idx, proc->id, infile);
-
     return idx;
 }
 
@@ -494,13 +471,13 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
             proc.pid = -1;
 
             proc.cpu_ticks_consumed = 0;
-            proc.next_req_idx = 0;
-            proc.num_requests = 0;
+            proc_requests[proc.id].next_req_idx = 0;
+            proc_requests[proc.id].num_requests = 0;
             proc.state = PROC_READY;
             proc.page_table_frame = -1;
-            
-            load_requests_for_process(&proc);
-            
+
+            load_requests_for_process(proc.pid, proc.id);
+
             pid_t pid;
             char runtime_str[32];
             
@@ -583,7 +560,7 @@ static void dispatch_next(SchedulerContext *ctx, int now)
         next.started    = 1;
         next.start_time = now;
         next.cpu_ticks_consumed = 0;
-        next.next_req_idx = 0;
+        proc_requests[next.id].next_req_idx = 0;
         next.state = PROC_RUNNING;
 
         if (mmu_process_init(&next, now, ctx->memory_log) == -1)
