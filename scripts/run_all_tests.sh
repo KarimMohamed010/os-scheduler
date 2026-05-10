@@ -33,6 +33,9 @@ cleanup() {
     ipcrm -S 2238 >/dev/null 2>&1 || true
     ipcrm -S 2239 >/dev/null 2>&1 || true
     ipcrm -M 2234 >/dev/null 2>&1 || true
+    ipcrm -S 5433 >/dev/null 2>&1 || true
+    ipcrm -Q 5434 >/dev/null 2>&1 || true
+    ipcrm -Q 5435 >/dev/null 2>&1 || true
 
     if [[ -f "$ORIG_PROCESSES" ]]; then
         cp "$ORIG_PROCESSES" processes.txt

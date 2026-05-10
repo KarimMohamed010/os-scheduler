@@ -22,6 +22,11 @@
 #define FCFS2_CHILD_TICK_ACK_SEM_KEY 2242
 #define FCFS2_STEAL_OVERHEAD_SEC 3
 
+/* ── Phase 2: Process-Scheduler Sync IPC keys ── */
+#define PROC_SYNC_SEM_KEY 5433
+#define PROC_REQ_MQ_KEY   5434
+#define PROC_ACK_MQ_KEY   5435
+
 /* ── Algorithm IDs ── */
 #define ALGO_HPF    1
 #define ALGO_RR     2
@@ -51,6 +56,22 @@ typedef struct
     char va_str[11];        /* exact binary string for logging   */
     int is_write;
 } MemRequest;
+
+#define MSG_COMPUTE 1
+#define MSG_MEM_REQ 2
+
+typedef struct {
+    long mtype;       // process id
+    int msg_type;     // MSG_COMPUTE or MSG_MEM_REQ
+    int va;
+    int is_write;
+    char va_str[16];
+} ProcReqMsg;
+
+typedef struct {
+    long mtype;       // process id
+    int fault;        // 1 if page fault occurred, 0 otherwise
+} ProcAckMsg;
 /* =========================================================
  *  Process Control Block (PCB)
  *

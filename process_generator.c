@@ -90,6 +90,15 @@ static void cleanup_stale_ipc(void)
     {
         semctl(stale_id, 0, IPC_RMID);
     }
+
+    stale_id = msgget(PROC_REQ_MQ_KEY, 0666);
+    if (stale_id != -1) msgctl(stale_id, IPC_RMID, NULL);
+
+    stale_id = msgget(PROC_ACK_MQ_KEY, 0666);
+    if (stale_id != -1) msgctl(stale_id, IPC_RMID, NULL);
+
+    stale_id = semget(PROC_SYNC_SEM_KEY, MAX_PROCESSES + 1, 0666);
+    if (stale_id != -1) semctl(stale_id, 0, IPC_RMID);
 }
 
 int main(int argc, char *argv[])
@@ -265,6 +274,21 @@ int main(int argc, char *argv[])
         if (semctl(start_semid, 0, SETVAL, 0) == -1)
         {
             perror("semctl SETVAL start");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    int req_mq = msgget(PROC_REQ_MQ_KEY, IPC_CREAT | 0666);
+    if (req_mq == -1) { perror("msgget req_mq"); exit(EXIT_FAILURE); }
+
+    int ack_mq = msgget(PROC_ACK_MQ_KEY, IPC_CREAT | 0666);
+    if (ack_mq == -1) { perror("msgget ack_mq"); exit(EXIT_FAILURE); }
+
+    int proc_sync_sem = semget(PROC_SYNC_SEM_KEY, MAX_PROCESSES + 1, IPC_CREAT | 0666);
+    if (proc_sync_sem == -1) { perror("semget proc_sync_sem"); exit(EXIT_FAILURE); }
+    for (int i = 0; i <= MAX_PROCESSES; i++) {
+        if (semctl(proc_sync_sem, i, SETVAL, 0) == -1) {
+            perror("semctl SETVAL proc_sync_sem");
             exit(EXIT_FAILURE);
         }
     }
@@ -503,6 +527,15 @@ void clearResources(int signum)
             perror("semctl IPC_RMID");
         start_semid = -1;
     }
+
+    int stale_req_mq = msgget(PROC_REQ_MQ_KEY, 0666);
+    if (stale_req_mq != -1) msgctl(stale_req_mq, IPC_RMID, NULL);
+
+    int stale_ack_mq = msgget(PROC_ACK_MQ_KEY, 0666);
+    if (stale_ack_mq != -1) msgctl(stale_ack_mq, IPC_RMID, NULL);
+
+    int stale_proc_sem = semget(PROC_SYNC_SEM_KEY, MAX_PROCESSES + 1, 0666);
+    if (stale_proc_sem != -1) semctl(stale_proc_sem, 0, IPC_RMID);
 
     /* Free heap memory */
     if (proc_table != NULL)

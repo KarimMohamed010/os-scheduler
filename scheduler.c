@@ -6,7 +6,10 @@
 #include <errno.h>
 #include <string.h>
 #include "mmu.h"
-static ProcessRequests proc_requests[MAX_PROCESSES + 1];
+static int proc_sync_sem = -1;
+static int req_mq = -1;
+static int ack_mq = -1;
+
 typedef struct
 {
     int cpu_id;
@@ -264,21 +267,7 @@ static void blocked_push(SchedulerContext *ctx, PCB proc, int ticks_left,
     ctx->blocked_head = node;
 }
 
-static int blocked_release_due_now(const SchedulerContext *ctx)
-{
-    const BlockedNode *node = ctx->blocked_head;
 
-    while (node)
-    {
-        if (node->slot.ticks_remaining <= 1)
-        {
-            return 1;
-        }
-        node = node->next;
-    }
-
-    return 0;
-}
 
 static void blocked_release_ready_processes(SchedulerContext *ctx, int now)
 {
@@ -314,66 +303,16 @@ static void blocked_release_ready_processes(SchedulerContext *ctx, int now)
     }
 }
 
-static int handle_due_requests(SchedulerContext *ctx, int now)
-{
-    PCB *p = &ctx->running;
-    ProcessRequests *pr = &proc_requests[p->id];
-
-    while (pr->next_req_idx < pr->num_requests)
-    {
-        MemRequest *req = &pr->requests[pr->next_req_idx];
-        int fault_vpn = -1;
-        int phys_addr;
-        int disk_ticks = 0;
-        int target_frame;
-
-        if (p->cpu_ticks_consumed < req->time)
-            break;
-
-        phys_addr = mmu_translate(p, req->va, req->is_write, &fault_vpn);
-        if (phys_addr != -1)
-        {
-            pr->next_req_idx++;
-            continue;
-        }
-
-        /* Out-of-range virtual addresses are ignored per the Phase 2 FAQ. */
-        if (fault_vpn < 0 || fault_vpn >= p->limit)
-        {
-            pr->next_req_idx++;
-            continue;
-        }
-
-        mmu_log_page_fault(ctx->memory_log, req->va_str, p->id);
-
-        target_frame = mmu_handle_fault(p, fault_vpn, req->is_write,
-                                        now, ctx->memory_log, &disk_ticks);
-        if (target_frame < 0)
-        {
-            fprintf(stderr, "MMU fault handling failed for process %d\n", p->id);
-            exit(EXIT_FAILURE);
-        }
-
-        account_running_tick(ctx);
-        p = &ctx->running;
-
-        p->state = PROC_BLOCKED;
-        pr->next_req_idx++;
-
-        if (p->pid > 0)
-            kill(p->pid, SIGSTOP);
-
-        blocked_push(ctx, *p, disk_ticks, fault_vpn, target_frame, req->is_write);
-
-        ctx->has_running = 0;
-        ctx->running.id = -1;
-        ctx->finish_pending = 0;
-        ctx->next_dispatch_time = now + 2;
-
-        return 1;
+static void sched_sem_up(int semid, int proc_id) {
+    struct sembuf op;
+    op.sem_num = proc_id;
+    op.sem_op = 1;
+    op.sem_flg = 0;
+    while (semop(semid, &op, 1) == -1) {
+        if (errno == EINTR) continue;
+        perror("semop up proc");
+        exit(1);
     }
-
-    return 0;
 }
 
 
@@ -385,78 +324,6 @@ static void free_blocked_queue(SchedulerContext *ctx)
         ctx->blocked_head = ctx->blocked_head->next;
         free(tmp);
     }
-}
-
-static void sort_requests_by_time(ProcessRequests *pr)
-{
-    for (int i = 1; i < pr->num_requests; ++i)
-    {
-        MemRequest key = pr->requests[i];
-        int j = i - 1;
-        while (j >= 0 && pr->requests[j].time > key.time)
-        {
-            pr->requests[j + 1] = pr->requests[j];
-            --j;
-        }
-        pr->requests[j + 1] = key;
-    }
-}
-
-static int load_requests_for_process(int pid, int id)
-{
-    char infile[32];
-    FILE *fp;
-    char line[256];
-    int idx = 0;
-    ProcessRequests *pr = &proc_requests[id];
-
-    snprintf(infile, sizeof(infile), "requests_%d.txt", id);
-    fp = fopen(infile, "r");
-    if (!fp)
-    {
-        snprintf(infile, sizeof(infile), "requests%d.txt", id);
-        fp = fopen(infile, "r");
-        if (!fp)
-        {
-            (void)pid;
-            pr->num_requests = 0;
-            pr->next_req_idx = 0;
-            return 0;
-        }
-    }
-
-    pr->num_requests = 0;
-    pr->next_req_idx = 0;
-
-    while (fgets(line, sizeof(line), fp))
-    {
-        int t;
-        char address[64];
-        char rw;
-
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
-            continue;
-        if (idx >= MAX_REQUESTS)
-            break;
-        if (sscanf(line, "%d %63s %c", &t, address, &rw) != 3)
-            continue;
-
-        pr->requests[idx].time = t;
-        strncpy(pr->requests[idx].va_str, address, sizeof(pr->requests[idx].va_str) - 1);
-        pr->requests[idx].va_str[sizeof(pr->requests[idx].va_str) - 1] = '\0';
-        pr->requests[idx].va = (int)strtol(address, NULL,
-                                           (strncmp(address, "0x", 2) == 0 ||
-                                            strncmp(address, "0X", 2) == 0)
-                                               ? 0
-                                               : 2);
-        pr->requests[idx].is_write = (rw == 'w' || rw == 'W');
-        idx++;
-    }
-
-    pr->num_requests = idx;
-    sort_requests_by_time(pr); /* see step 3 */
-    fclose(fp);
-    return idx;
 }
 
 static void cleanup_algo_state(SchedulerContext *ctx)
@@ -496,15 +363,12 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
             proc.pid = -1;
 
             proc.cpu_ticks_consumed = 0;
-            proc_requests[proc.id].next_req_idx = 0;
-            proc_requests[proc.id].num_requests = 0;
             proc.state = PROC_READY;
             proc.page_table_frame = -1;
 
-            load_requests_for_process(proc.pid, proc.id);
-
             pid_t pid;
             char runtime_str[32];
+            char id_str[32];
             
             pid = fork();
             if (pid == -1)
@@ -516,14 +380,14 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
             if (pid == 0)
             {
                 snprintf(runtime_str, sizeof(runtime_str), "%d", proc.runtime);
-                execl("./process.out", "process.out", runtime_str, NULL);
+                snprintf(id_str, sizeof(id_str), "%d", proc.id);
+                execl("./process.out", "process.out", runtime_str, id_str, NULL);
                 perror("execl process.out");
                 exit(1);
             }
             
             
             proc.pid = pid;
-            kill(pid, SIGSTOP);
             ctx->ops.enqueue(ctx->algo_state, proc);
             ctx->total_processes++;
             arrivals++;
@@ -585,7 +449,6 @@ static void dispatch_next(SchedulerContext *ctx, int now)
         next.started    = 1;
         next.start_time = now;
         next.cpu_ticks_consumed = 0;
-        proc_requests[next.id].next_req_idx = 0;
         next.state = PROC_RUNNING;
 
         if (mmu_process_init(&next, now, ctx->memory_log) == -1)
@@ -594,14 +457,12 @@ static void dispatch_next(SchedulerContext *ctx, int now)
             exit(EXIT_FAILURE);
         }
 
-        kill(next.pid, SIGCONT);
         refresh_waiting(&next, now);
         log_event(ctx, now, "started", &next);
     }
     else
     {
         /* Resuming a previously preempted process. */
-        kill(next.pid, SIGCONT);
         refresh_waiting(&next, now);
         log_event(ctx, now, "resumed", &next);
     }
@@ -739,7 +600,6 @@ static int check_running_finished(SchedulerContext *ctx, int now)
 
 static void preempt_running(SchedulerContext *ctx, int now)
 {
-    kill(ctx->running.pid, SIGSTOP);
     refresh_waiting(&ctx->running, now);
     log_event(ctx, now, "stopped", &ctx->running);
     ctx->ops.enqueue(ctx->algo_state, ctx->running);
@@ -799,16 +659,7 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
             ctx->running.remaining > 0)
         {
             note_rr_quantum_boundary(ctx);
-            /*
-             * A process that finishes its disk wait on this same boundary
-             * must count as a competitor before RR decides whether the
-             * current process may continue into another quantum.
-             *
-             * We preempt before actually releasing the blocked process so
-             * the queue order stays: preempted process, then unblocked
-             * process, then same-tick arrivals.
-             */
-            if (ctx->ops.has_ready(ctx->algo_state) || blocked_release_due_now(ctx))
+            if (ctx->ops.has_ready(ctx->algo_state) )
             {
                 preempt_running(ctx, now);
             }
@@ -841,19 +692,51 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
 
     if (ctx->has_running)
     {
-        /* Check for due memory requests BEFORE consuming this tick.
-         * req->time is the number of CPU ticks already consumed when
-         * the request fires, so "consumed == req->time" means we are
-         * at the boundary where the request is due.
-         * This single check replaces the previous two-call pattern.    */
-        if (handle_due_requests(ctx, now))
-        {
-            return;
-        }
+        sched_sem_up(proc_sync_sem, ctx->running.id);
 
-        if (ctx->running.remaining > 0)
-        {
-            account_running_tick(ctx);
+        while (1) {
+            ProcReqMsg msg;
+            msgrcv(req_mq, &msg, sizeof(ProcReqMsg) - sizeof(long), ctx->running.id, 0);
+
+            if (msg.msg_type == MSG_COMPUTE) {
+                account_running_tick(ctx);
+                break;
+            } else if (msg.msg_type == MSG_MEM_REQ) {
+                int fault_vpn = -1;
+                int phys_addr = mmu_translate(&ctx->running, msg.va, msg.is_write, &fault_vpn);
+
+                if (phys_addr != -1) {
+                    ProcAckMsg ack;
+                    ack.mtype = ctx->running.id;
+                    ack.fault = 0;
+                    msgsnd(ack_mq, &ack, sizeof(ProcAckMsg) - sizeof(long), 0);
+                } else if (fault_vpn < 0 || fault_vpn >= ctx->running.limit) {
+                    /* Out-of-range virtual addresses are ignored per the Phase 2 FAQ. */
+                    ProcAckMsg ack;
+                    ack.mtype = ctx->running.id;
+                    ack.fault = 0;
+                    msgsnd(ack_mq, &ack, sizeof(ProcAckMsg) - sizeof(long), 0);
+                } else {
+                    mmu_log_page_fault(ctx->memory_log, msg.va_str, ctx->running.id);
+                    int disk_ticks = 0;
+                    int target_frame = mmu_handle_fault(&ctx->running, fault_vpn, msg.is_write, now, ctx->memory_log, &disk_ticks);
+                    
+                    account_running_tick(ctx);
+                    ctx->running.state = PROC_BLOCKED;
+                    blocked_push(ctx, ctx->running, disk_ticks, fault_vpn, target_frame, msg.is_write);
+
+                    ProcAckMsg ack;
+                    ack.mtype = ctx->running.id;
+                    ack.fault = 1;
+                    msgsnd(ack_mq, &ack, sizeof(ProcAckMsg) - sizeof(long), 0);
+
+                    ctx->has_running = 0;
+                    ctx->running.id = -1;
+                    ctx->finish_pending = 0;
+                    ctx->next_dispatch_time = now + 2;
+                    break;
+                }
+            }
         }
     }
 }
@@ -980,6 +863,7 @@ static void child_dispatch_next(FCFS2ChildContext *ctx, int now)
     {
         pid_t pid;
         char runtime_str[32];
+        char id_str[32];
 
         pid = fork();
         if (pid == -1)
@@ -993,7 +877,8 @@ static void child_dispatch_next(FCFS2ChildContext *ctx, int now)
         if (pid == 0)
         {
             snprintf(runtime_str, sizeof(runtime_str), "%d", next.runtime);
-            execl("./process.out", "process.out", runtime_str, NULL);
+            snprintf(id_str, sizeof(id_str), "%d", next.id);
+            execl("./process.out", "process.out", runtime_str, id_str, NULL);
             perror("execl process.out");
             exit(1);
         }
@@ -1006,7 +891,6 @@ static void child_dispatch_next(FCFS2ChildContext *ctx, int now)
     }
     else
     {
-        kill(next.pid, SIGCONT);
         refresh_waiting(&next, now);
         child_log_event(ctx, now, "resumed", &next);
     }
@@ -1194,6 +1078,21 @@ static void child_tick(FCFS2ChildContext *ctx, int now)
 
     if (ctx->has_running && ctx->running.remaining > 0)
     {
+        sched_sem_up(proc_sync_sem, ctx->running.id);
+        while (1) {
+            ProcReqMsg msg;
+            msgrcv(req_mq, &msg, sizeof(ProcReqMsg) - sizeof(long), ctx->running.id, 0);
+            if (msg.msg_type == MSG_COMPUTE) {
+                break;
+            } else {
+                /* FCFS-2 doesn't use memory simulation */
+                ProcAckMsg ack;
+                ack.mtype = ctx->running.id;
+                ack.fault = 0;
+                msgsnd(ack_mq, &ack, sizeof(ProcAckMsg) - sizeof(long), 0);
+            }
+        }
+
         ctx->running.remaining--;
         ctx->busy_ticks++;
         child_update_running_metric(ctx, ctx->running.remaining);
@@ -1754,6 +1653,10 @@ int main(int argc, char *argv[])
         perror("msgget");
         return 1;
     }
+
+    proc_sync_sem = semget(PROC_SYNC_SEM_KEY, MAX_PROCESSES + 1, 0666);
+    req_mq = msgget(PROC_REQ_MQ_KEY, 0666);
+    ack_mq = msgget(PROC_ACK_MQ_KEY, 0666);
 
     ctx.tick_semid = semget(TICK_SYNC_SEM_KEY, 1, 0666 | IPC_CREAT);
     if (ctx.tick_semid == -1)

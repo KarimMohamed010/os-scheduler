@@ -32,7 +32,7 @@ echo "---------------------------------------------------"
 echo "Running Phase 2 Sample 1 (RR, Q=3, K=1)"
 echo "---------------------------------------------------"
 cleanup
-rm -f requests_*.txt memory.log scheduler.log
+rm -f requests_*.txt memory.log scheduler.log processes.txt
 cp phase2_tc/sample1/* .
 
 echo -e "2\n3\n1\n" | ./process_generator.out processes.txt
@@ -49,7 +49,7 @@ echo "---------------------------------------------------"
 echo "Running Phase 2 Sample 2 (RR, Q=1, K=100)"
 echo "---------------------------------------------------"
 cleanup
-rm -f requests_*.txt memory.log scheduler.log
+rm -f requests_*.txt memory.log scheduler.log processes.txt
 cp phase2_tc/sample2/* .
 
 echo -e "2\n1\n100\n" | ./process_generator.out processes.txt
@@ -66,7 +66,7 @@ echo "---------------------------------------------------"
 echo "Running Phase 2 Sample 3 (ignore out-of-range VA)"
 echo "---------------------------------------------------"
 cleanup
-rm -f requests_*.txt memory.log scheduler.log
+rm -f requests_*.txt memory.log scheduler.log processes.txt
 cp phase2_tc/sample3/* .
 
 echo -e "2\n5\n10\n" | ./process_generator.out processes.txt
@@ -83,7 +83,7 @@ echo "---------------------------------------------------"
 echo "Running Phase 2 Sample 4 (invalid access ignored before valid fault)"
 echo "---------------------------------------------------"
 cleanup
-rm -f requests_*.txt memory.log scheduler.log
+rm -f requests_*.txt memory.log scheduler.log processes.txt
 cp phase2_tc/sample4/* .
 
 echo -e "2\n5\n10\n" | ./process_generator.out processes.txt
