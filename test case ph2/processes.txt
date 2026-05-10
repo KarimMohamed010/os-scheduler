@@ -1,3 +1,0 @@
-#id	arrival	runtime	priority base limit
-1	1	15	0	0	3
-2	3	10	0	30	2

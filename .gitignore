@@ -1,10 +1,26 @@
+# Build outputs
 *.out
 *.o
+process_generator
+
+# Runtime/generated outputs
 *.log
 *.perf
-*.txt
+processes.txt
+requests_*.txt
 
+# IDE
+.vscode/
+
+# Misc
+.codex
+questions.md
+
+# But keep test case data
 !phase1_tc/
 !phase2_tc/
 !phase2_expected/
+!expected_perf/
+!test_cases/
+!empty_req/
 
