@@ -38,15 +38,6 @@ static void load_requests() {
         requests[num_requests].is_write = (rw == 'w' || rw == 'W');
         num_requests++;
     }
-    for (int i = 1; i < num_requests; ++i) {
-        MemRequest key = requests[i];
-        int j = i - 1;
-        while (j >= 0 && requests[j].time > key.time) {
-            requests[j + 1] = requests[j];
-            --j;
-        }
-        requests[j + 1] = key;
-    }
     fclose(fp);
 }
 
