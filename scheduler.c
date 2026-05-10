@@ -264,6 +264,22 @@ static void blocked_push(SchedulerContext *ctx, PCB proc, int ticks_left,
     ctx->blocked_head = node;
 }
 
+static int blocked_release_due_now(const SchedulerContext *ctx)
+{
+    const BlockedNode *node = ctx->blocked_head;
+
+    while (node)
+    {
+        if (node->slot.ticks_remaining <= 1)
+        {
+            return 1;
+        }
+        node = node->next;
+    }
+
+    return 0;
+}
+
 static void blocked_release_ready_processes(SchedulerContext *ctx, int now)
 {
     BlockedNode **indirect = &ctx->blocked_head;
@@ -783,7 +799,16 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
             ctx->running.remaining > 0)
         {
             note_rr_quantum_boundary(ctx);
-            if (ctx->ops.has_ready(ctx->algo_state))
+            /*
+             * A process that finishes its disk wait on this same boundary
+             * must count as a competitor before RR decides whether the
+             * current process may continue into another quantum.
+             *
+             * We preempt before actually releasing the blocked process so
+             * the queue order stays: preempted process, then unblocked
+             * process, then same-tick arrivals.
+             */
+            if (ctx->ops.has_ready(ctx->algo_state) || blocked_release_due_now(ctx))
             {
                 preempt_running(ctx, now);
             }
