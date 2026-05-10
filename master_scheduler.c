@@ -23,20 +23,9 @@ typedef struct
     int M;
     int last_clk;
 
-    /*
-     * Steal-check scheduling (Q38/Q43/Q46):
-     *   next_N_check : next regular N-multiple at which to check balance.
-     *   recheck_at   : if > 0, a re-check is scheduled at this tick
-     *                  (set after every steal; cleared after a clean re-check).
-     * Regular N-checks are suppressed while recheck_at > 0 so that the
-     * re-check chain (steal → +3 → re-check → steal → +3 → …) runs to
-     * completion before the normal N-cadence resumes.
-     */
     int next_N_check;
     int recheck_at;
-    int recheck_heavy;  /* CPU id (1 or 2) that was the heavy side of the last steal.
-                         * During a re-check we only steal if that SAME CPU is still
-                         * heavier; if the direction has flipped we stop the chain. */
+    int recheck_heavy;
 
     pid_t child_pids[2];
 } MasterContext;
@@ -117,7 +106,6 @@ static int sem_down_idx(int semid, unsigned short sem_num)
 
 static int choose_consumer(const FCFS2Control *ctrl)
 {
-    /* Tie-break toward CPU 1 to keep routing deterministic when both queues look equally loaded. */
     if (ctrl->queue_size[0] <= ctrl->queue_size[1])
     {
         return 1;
@@ -227,7 +215,6 @@ static int route_pending_messages(MasterContext *ctx)
         {
             return 0;
         }
-        /* Hand off one message at a time so queue accounting stays synchronized with routing decisions. */
         ctx->ctrl->consume_turn = cpu;
         if (!ctrl_unlock(ctx))
         {
@@ -269,13 +256,11 @@ static void maybe_rebalance(MasterContext *ctx, int now)
         return;
     }
 
-    /* Advance the regular N-check pointer (may be overwritten if we steal). */
     if (is_regular_check)
     {
         ctx->next_N_check = now + ctx->N;
     }
 
-    /* Do not steal while a penalty from a *previous* tick is still in effect. */
     if (!ctrl_lock(ctx)) { return; }
     load1        = ctx->ctrl->ready_remaining[0] + ctx->ctrl->running_remaining[0];
     load2        = ctx->ctrl->ready_remaining[1] + ctx->ctrl->running_remaining[1];
@@ -301,20 +286,18 @@ static void maybe_rebalance(MasterContext *ctx, int now)
         return;
     }
 
-    /* ── Imbalanced: perform one steal ── */
     if (is_recheck)
     {
         if (ctx->recheck_heavy == 1 && load1 > load2)
         {
-            heavy = 1; light = 2;   /* CPU1 still heavy: steal again */
+            heavy = 1; light = 2;
         }
         else if (ctx->recheck_heavy == 2 && load2 > load1)
         {
-            heavy = 2; light = 1;   /* CPU2 still heavy: steal again */
+            heavy = 2; light = 1;
         }
         else
         {
-            /* Direction flipped or balanced — stop the re-check chain. */
             ctx->next_N_check = ((now / ctx->N) + 1) * ctx->N;
             ctx->recheck_at   = 0;
             ctx->recheck_heavy = 0;
@@ -323,7 +306,6 @@ static void maybe_rebalance(MasterContext *ctx, int now)
     }
     else
     {
-        /* Regular check: steal from whichever side is heavier. */
         if (load1 > load2) { heavy = 1; light = 2; }
         else               { heavy = 2; light = 1; }
     }
@@ -335,7 +317,6 @@ static void maybe_rebalance(MasterContext *ctx, int now)
     ctx->ctrl->has_stolen    = 0;
     if (!ctrl_unlock(ctx)) { return; }
 
-    /* Ask the heavy CPU to hand over its tail process. */
     if (!sem_up_idx(ctx->steal_semid,  (unsigned short)(heavy - 1))) { return; }
     if (!sem_down_idx(ctx->ack_semid, 0)) { return; }
 
@@ -345,7 +326,6 @@ static void maybe_rebalance(MasterContext *ctx, int now)
 
     if (!has_stolen)
     {
-        /* Nothing to steal from heavy CPU — stop the loop. */
         if (!ctrl_lock(ctx)) { return; }
         ctx->ctrl->steal_pending = 0;
         ctrl_unlock(ctx);
@@ -354,18 +334,16 @@ static void maybe_rebalance(MasterContext *ctx, int now)
         return;
     }
 
-    /* Deliver the stolen process to the light CPU. */
     if (!sem_up_idx(ctx->steal_semid,  (unsigned short)(light - 1))) { return; }
     if (!sem_down_idx(ctx->ack_semid, 0)) { return; }
 
-    /* Apply 3-tick overhead and schedule re-check. */
     if (!ctrl_lock(ctx)) { return; }
     ctx->ctrl->penalty_until = now + FCFS2_STEAL_OVERHEAD_SEC;
     ctx->ctrl->steal_pending = 0;
     if (!ctrl_unlock(ctx)) { return; }
 
     ctx->recheck_at    = now + FCFS2_STEAL_OVERHEAD_SEC;
-    ctx->recheck_heavy = heavy;   /* remember direction for the re-check */
+    ctx->recheck_heavy = heavy;
 }
 
 static int process_tick_boundary(MasterContext *ctx, int tick)
@@ -392,7 +370,6 @@ static int process_tick_boundary(MasterContext *ctx, int tick)
     {
         return 0;
     }
-    /* Publish the tick once so both children use the same boundary for logs and accounting. */
     ctx->ctrl->current_tick = tick;
     if (!ctrl_unlock(ctx))
     {
@@ -414,7 +391,6 @@ static int process_tick_boundary(MasterContext *ctx, int tick)
         }
     }
 
-    /* Wait for both children to finish their local tick before releasing the generator side. */
     if (!sem_down_idx(ctx->child_tick_ack_semid, 0) || !sem_down_idx(ctx->child_tick_ack_semid, 0))
     {
         return 0;
@@ -619,9 +595,9 @@ int main(int argc, char *argv[])
 
     ctx.N = atoi(argv[2]);
     ctx.M = atoi(argv[3]);
-    ctx.next_N_check  = ctx.N;  /* first regular check at t=N */
-    ctx.recheck_at    = 0;      /* no re-check pending        */
-    ctx.recheck_heavy = 0;      /* 0 = not set                */
+    ctx.next_N_check  = ctx.N;
+    ctx.recheck_at    = 0;
+    ctx.recheck_heavy = 0;
 
     ctx.msgqid = msgget(MSG_KEY, 0666 | IPC_CREAT);
     if (ctx.msgqid == -1)

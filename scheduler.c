@@ -149,8 +149,8 @@ typedef struct
 
     struct BlockedNode *blocked_head;
     FILE *memory_log;
-    int quantum_counter;   /* counts completed RR quantums for NRU R-bit reset */
-    int K;                 /* R-bit clear period in quantums (user input)       */
+    int quantum_counter;
+    int K;
 } SchedulerContext;
 
 static int scheduler_done(const SchedulerContext *ctx)
@@ -347,7 +347,6 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
     Message msg;
     int arrivals = 0;
 
-    /* Drain all currently available IPC messages without blocking this tick. */
     while (msgrcv(ctx->msgqid, &msg, sizeof(PCB), 0, IPC_NOWAIT) != -1)
     {
         if (msg.mtype == 1)
@@ -433,7 +432,6 @@ static void dispatch_next(SchedulerContext *ctx, int now)
 {
     PCB next;
 
-    /* A preemption/finish at time t should not let another process consume the same tick twice. */
     if (now < ctx->next_dispatch_time)
     {
         return;
@@ -446,8 +444,6 @@ static void dispatch_next(SchedulerContext *ctx, int now)
 
     if (!next.started)
     {
-        /* Process was already forked and SIGSTOP'd in receive_current_processes.
-         * Here we do first-dispatch bookkeeping and memory init only. */
         next.started    = 1;
         next.start_time = now;
         next.cpu_ticks_consumed = 0;
@@ -464,7 +460,6 @@ static void dispatch_next(SchedulerContext *ctx, int now)
     }
     else
     {
-        /* Resuming a previously preempted process. */
         refresh_waiting(&next, now);
         log_event(ctx, now, "resumed", &next);
     }
@@ -481,11 +476,6 @@ static void finish_running(SchedulerContext *ctx, int now)
     int uncounted_ticks;
     double wta;
 
-    /*
-     * Child execution is clock-driven and can reach zero just before the scheduler
-     * handles SIGCHLD at a boundary tick. If that happens, `remaining` may still be
-     * positive here and the final consumed tick(s) were not reflected in busy_ticks.
-     */
     uncounted_ticks = ctx->running.remaining;
     if (uncounted_ticks > 0)
     {
@@ -509,7 +499,6 @@ static void finish_running(SchedulerContext *ctx, int now)
     ctx->total_wta += wta;
     ctx->total_wta_sq += (wta * wta);
 
-    /* Count quantum boundary on natural finish too */
     if (ctx->algo == ALGO_RR)
     {
         note_rr_quantum_boundary(ctx);
@@ -529,7 +518,6 @@ static int settle_pending_finish(SchedulerContext *ctx, int now)
     int status;
     pid_t done;
 
-    /* `finish_pending` means the model reached zero during the previous tick and must be committed now. */
     if (!ctx->has_running || !ctx->finish_pending)
     {
         return 0;
@@ -557,7 +545,6 @@ static int settle_pending_finish(SchedulerContext *ctx, int now)
         return 0;
     }
 
-    /* Even if child reaping is delayed unexpectedly, keep scheduler model consistent. */
     finish_running(ctx, now);
     return 1;
 }
@@ -572,7 +559,6 @@ static int check_running_finished(SchedulerContext *ctx, int now)
         return 0;
     }
 
-    /* Poll non-blocking each boundary tick to avoid SIGCHLD ordering races. */
     done = waitpid(ctx->running.pid, &status, WNOHANG);
     if (done == ctx->running.pid)
     {
@@ -587,7 +573,6 @@ static int check_running_finished(SchedulerContext *ctx, int now)
 
     if (done == -1 && errno == ECHILD)
     {
-        /* Child already reaped elsewhere; treat it as finished to keep state consistent. */
         finish_running(ctx, now);
         return 1;
     }
@@ -679,11 +664,6 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
 
     if (ctx->algo == ALGO_RR)
     {
-        /*
-         * RR defers same-tick arrivals until after quantum/preemption handling.
-         * This preserves the FAQ ordering where a just-preempted process is
-         * re-enqueued before new arrivals that happen at the same boundary.
-         */
         receive_current_processes(ctx, now);
     }
 
@@ -713,8 +693,7 @@ static void scheduler_tick(SchedulerContext *ctx, int now)
                     ack.fault = 0;
                     msgsnd(ack_mq, &ack, sizeof(ProcAckMsg) - sizeof(long), 0);
                 } else if (fault_vpn < 0 || fault_vpn >= ctx->running.limit) {
-                    /* Out-of-range virtual addresses are ignored per the Phase 2 FAQ. */
-                    ProcAckMsg ack;
+                        ProcAckMsg ack;
                     ack.mtype = ctx->running.id;
                     ack.fault = 0;
                     msgsnd(ack_mq, &ack, sizeof(ProcAckMsg) - sizeof(long), 0);
@@ -1027,7 +1006,6 @@ static int child_apply_penalty(FCFS2ChildContext *ctx, int now)
 
     if (penalty_until > now)
     {
-        /* Work stealing charges a global pause; both CPUs must effectively lose these ticks. */
         if (ctx->has_running && !ctx->penalty_paused)
         {
             kill(ctx->running.pid, SIGSTOP);
@@ -1053,7 +1031,6 @@ static int child_apply_penalty(FCFS2ChildContext *ctx, int now)
 
 static void child_tick(FCFS2ChildContext *ctx, int now)
 {
-    /* Process completions BEFORE penalty to ensure correct timing and dispatch calculations */
     if (ctx->has_running)
     {
         int finished = 0;
@@ -1089,7 +1066,6 @@ static void child_tick(FCFS2ChildContext *ctx, int now)
             if (msg.msg_type == MSG_COMPUTE) {
                 break;
             } else {
-                /* FCFS-2 doesn't use memory simulation */
                 ProcAckMsg ack;
                 ack.mtype = ctx->running.id;
                 ack.fault = 0;
@@ -1174,8 +1150,7 @@ static int child_handle_consume_grants(FCFS2ChildContext *ctx)
 
             if (!shutdown)
             {
-                /* The master decides which child may consume exactly one pending generator message. */
-                child_consume_one_message(ctx);
+                        child_consume_one_message(ctx);
             }
         }
 
@@ -1229,8 +1204,7 @@ static int child_handle_steal_commands(FCFS2ChildContext *ctx)
                 {
                     PCB stolen;
 
-                    /* Steal from the tail so the donor keeps its oldest FCFS work in arrival order. */
-                    if (fcfs_steal_tail(&ctx->fcfs_state, &stolen))
+                                    if (fcfs_steal_tail(&ctx->fcfs_state, &stolen))
                     {
                         child_account_dequeue(ctx, &stolen);
                         child_log_stolen(ctx, current_tick, stolen.id);
@@ -1363,7 +1337,6 @@ static int child_handle_tick_grants(FCFS2ChildContext *ctx)
             return 0;
         }
 
-        /* Children advance only when the master publishes the authoritative clock tick. */
         ctx->last_clk = tick;
         child_tick(ctx, tick);
         if (!sem_up_idx(ctx->child_tick_ack_semid, 0))
@@ -1495,8 +1468,7 @@ static int run_fcfs2_child(int argc, char *argv[])
 
             if (all_received && !ctx.has_running && !fcfs_has_ready(&ctx.fcfs_state))
             {
-                /* Report completion once, after both the local queue and current process are drained. */
-                if (!ctx.done_reported)
+                        if (!ctx.done_reported)
                 {
                     if (!child_ctrl_lock(&ctx))
                     {
@@ -1646,7 +1618,6 @@ int main(int argc, char *argv[])
     ctx.running.id = -1;
 
     ctx.algo = atoi(argv[1]);
-    /* argv: [0]=scheduler [1]=algo [2]=quantum [3]=K */
     ctx.K = (argc >= 4) ? atoi(argv[3]) : 1;
     if (ctx.K < 1) ctx.K = 1;
     ctx.quantum_counter = 0;

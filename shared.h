@@ -5,12 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* ── IPC keys ── */
 #define MSG_KEY          1234
 #define SHM_KEY_CLK      4321
 #define TICK_SYNC_SEM_KEY 1235
 
-/* ── FCFS-2 IPC keys (Phase 1, unchanged) ── */
 #define FCFS2_CTRL_SHM_KEY       2234
 #define FCFS2_CONSUME_SEM_KEY    2235
 #define FCFS2_ACK_SEM_KEY        2236
@@ -22,38 +20,26 @@
 #define FCFS2_CHILD_TICK_ACK_SEM_KEY 2242
 #define FCFS2_STEAL_OVERHEAD_SEC 3
 
-/* ── Phase 2: Process-Scheduler Sync IPC keys ── */
 #define PROC_SYNC_SEM_KEY 5433
 #define PROC_REQ_MQ_KEY   5434
 #define PROC_ACK_MQ_KEY   5435
 
-/* ── Algorithm IDs ── */
 #define ALGO_HPF    1
 #define ALGO_RR     2
 #define ALGO_FCFS_2 3
 
-/* ── Capacity limits ── */
 #define MAX_PROCESSES 100
 #define MAX_REQUESTS  64   /* max memory requests per process (Phase 2) */
 
-/* ── Phase 2: process execution states ── */
 #define PROC_READY   0
 #define PROC_RUNNING 1
 #define PROC_BLOCKED 2  /* blocked waiting for disk I/O */
 
-/* =========================================================
- *  Phase 2: per-process memory access request
- *  Loaded from  requests<id>.txt  by the scheduler.
- *
- *  time     – relative CPU ticks after first dispatch
- *  va       – virtual address (parsed from binary string)
- *  is_write – 1 = store, 0 = load
- * ========================================================= */
 typedef struct
 {
     int time;
-    int va;                 /* integer value for MMU translation */
-    char va_str[11];        /* exact binary string for logging   */
+    int va;
+    char va_str[11];
     int is_write;
 } MemRequest;
 
@@ -72,16 +58,8 @@ typedef struct {
     long mtype;       // process id
     int fault;        // 1 if page fault occurred, 0 otherwise
 } ProcAckMsg;
-/* =========================================================
- *  Process Control Block (PCB)
- *
- *  Phase 2 additions are grouped at the bottom so the
- *  struct layout is backward-compatible for Phase 1 code
- *  that does not use the new fields.
- * ========================================================= */
 typedef struct
 {
-    /* ── Phase 1 fields (unchanged) ── */
     int id;
     int arrival;
     int runtime;
@@ -97,13 +75,12 @@ typedef struct
     int started;
     int finished;
 
-    /* ── Phase 2: memory management ── */
-    int base;               /* first disk page of process image     */
-    int limit;              /* number of virtual pages owned        */
-    int page_table_frame;   /* physical frame holding this PT       */
-    int cpu_ticks_consumed; /* CPU ticks used since first dispatch  */
-    int state;              /* PROC_READY / PROC_RUNNING / PROC_BLOCKED */
-    int phase2_enabled;     /* 1 when this run should issue MMU requests */
+    int base;
+    int limit;
+    int page_table_frame;
+    int cpu_ticks_consumed;
+    int state;
+    int phase2_enabled;
 } PCB;
 
 typedef struct
@@ -113,19 +90,12 @@ typedef struct
     int num_requests;
 } ProcessRequests;
 
-/* =========================================================
- *  Message (process generator → scheduler)
- *  mtype 1 = new process, mtype 2 = end-of-input sentinel
- * ========================================================= */
 typedef struct
 {
     long mtype;
     PCB  proc;
 } Message;
 
-/* =========================================================
- *  Ready-queue node (doubly-linked list, shared by all algos)
- * ========================================================= */
 typedef struct QNode
 {
     PCB         pcb;
@@ -140,9 +110,6 @@ typedef struct
     int    size;
 } ReadyQueue;
 
-/* =========================================================
- *  FCFS-2 shared-memory control block (Phase 1, unchanged)
- * ========================================================= */
 typedef struct
 {
     int queue_size[2];
@@ -164,9 +131,6 @@ typedef struct
     PCB stolen_proc;
 } FCFS2Control;
 
-/* =========================================================
- *  Inline queue helpers (used by HPF, RR, FCFS)
- * ========================================================= */
 
 static inline ReadyQueue *queue_create(void)
 {

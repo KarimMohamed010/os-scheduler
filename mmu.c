@@ -4,9 +4,6 @@
 FrameEntry frame_table[PHYS_FRAMES];
 PageTable  page_tables[MAX_PROCESSES + 1];
 
-/* =========================================================
- *  Helpers
- * ========================================================= */
 
 static int is_valid_pid(int pid)
 {
@@ -59,8 +56,6 @@ static void invalidate_pte_for_frame(const FrameEntry *f)
 
     pte->present = 0;
     pte->frame = -1;
-    pte->R = 0;
-    pte->M = 0;
 }
 
 static void claim_frame(int frame, int pid, int vpn, int is_page_table,
@@ -108,15 +103,9 @@ static void commit_page_to_frame(PCB *pcb, int vpn, int frame, int fault_write)
 
     pte->frame = frame;
     pte->present = 1;
-    pte->R = 1;
-    pte->M = fault_write ? 1 : 0;
-
     claim_frame(frame, pcb->id, vpn, 0, 0, 1, fault_write ? 1 : 0);
 }
 
-/* =========================================================
- *  memory.log helpers
- * ========================================================= */
 
 void mmu_log_page_fault(FILE *log, const char *va_str, int pid)
 {
@@ -163,9 +152,6 @@ void mmu_log_loaded(FILE *log, int now, int disk_addr, int pid, int frame)
     fflush(log);
 }
 
-/* =========================================================
- *  Core MMU
- * ========================================================= */
 
 void mmu_init(void)
 {
@@ -180,8 +166,6 @@ void mmu_init(void)
         {
             page_tables[pid].entries[vpn].frame = -1;
             page_tables[pid].entries[vpn].present = 0;
-            page_tables[pid].entries[vpn].R = 0;
-            page_tables[pid].entries[vpn].M = 0;
         }
     }
 }
@@ -218,26 +202,19 @@ int mmu_process_init(PCB *pcb, int now, FILE *log)
         return -1;
     }
 
-    /* Reset this process's page table entries */
     for (int vpn = 0; vpn < MAX_VPAGES; ++vpn)
     {
         page_tables[pcb->id].entries[vpn].frame   = -1;
         page_tables[pcb->id].entries[vpn].present = 0;
-        page_tables[pcb->id].entries[vpn].R       = 0;
-        page_tables[pcb->id].entries[vpn].M       = 0;
     }
 
-    /* Allocate page-table frame. */
     pt_frame = mmu_alloc_frame();
     if (pt_frame != -1)
     {
-        /* Free frame found; log it. */
         mmu_log_free_frame(log, pt_frame);
     }
     else
     {
-        /* No free frame: use NRU eviction.
-         * Per spec Q8/Q10: no time penalty at startup regardless. */
         pt_frame = select_nru_victim();
         if (pt_frame < 0)
         {
@@ -245,30 +222,23 @@ int mmu_process_init(PCB *pcb, int now, FILE *log)
                     pcb->id);
             return -1;
         }
-        /* Dirty victim write-back is silently discarded at startup (Q10) */
         invalidate_pte_for_frame(&frame_table[pt_frame]);
         clear_frame(&frame_table[pt_frame]);
-        /* No log line for NRU eviction at startup */
     }
 
     claim_frame(pt_frame, pcb->id, -1, 1, 0, 0, 0);
     pcb->page_table_frame = pt_frame;
 
-    /* Allocate frame for virtual page 0. */
     first_data_frame = mmu_alloc_frame();
     if (first_data_frame != -1)
     {
-        /* Free frame found; log it. */
         mmu_log_free_frame(log, first_data_frame);
     }
     else
     {
-        /* No free frame: use NRU eviction (page-table and reserved frames are
-         * skipped by select_nru_victim). */
         first_data_frame = select_nru_victim();
         if (first_data_frame < 0)
         {
-            /* Roll back PT frame */
             clear_frame(&frame_table[pt_frame]);
             pcb->page_table_frame = -1;
             fprintf(stderr, "mmu_process_init: no frame available for page 0 of pid %d\n",
@@ -277,12 +247,10 @@ int mmu_process_init(PCB *pcb, int now, FILE *log)
         }
         invalidate_pte_for_frame(&frame_table[first_data_frame]);
         clear_frame(&frame_table[first_data_frame]);
-        /* No log line for NRU eviction at startup */
     }
 
     commit_page_to_frame(pcb, 0, first_data_frame, 0);
 
-    /* Log the page-0 load; startup allocation has no time penalty. */
     mmu_log_loaded(log, now, pcb->base + 0, pcb->id, first_data_frame);
 
     pcb->state = PROC_RUNNING;
@@ -308,8 +276,6 @@ void mmu_process_exit(int pid)
     {
         page_tables[pid].entries[vpn].frame = -1;
         page_tables[pid].entries[vpn].present = 0;
-        page_tables[pid].entries[vpn].R = 0;
-        page_tables[pid].entries[vpn].M = 0;
     }
 }
 
@@ -340,12 +306,10 @@ int mmu_translate(PCB *pcb, int va, int write, int *fault_vpn)
 
     f = &frame_table[pte->frame];
     f->R = 1;
-    pte->R = 1;
 
     if (write)
     {
         f->M = 1;
-        pte->M = 1;
     }
 
     return (pte->frame * PAGE_SIZE) + offset;
@@ -436,9 +400,5 @@ void mmu_clear_r_bits(void)
 
         f->R = 0;
         pte = get_pte(f->owner_pid, f->vpn);
-        if (pte && pte->present)
-        {
-            pte->R = 0;
-        }
     }
 }

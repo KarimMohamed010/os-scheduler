@@ -3,11 +3,11 @@
 #include <errno.h>
 #include <string.h>
 
-static int msgqid = -1;          /* System-V message queue id          */
-static int tick_semid = -1;      /* System-V semaphore id for tick sync */
-static int tick_done_semid = -1; /* FCFS-2 generator/master tick ack */
-static int start_semid = -1;     /* FCFS-2 generator/master startup sync */
-static PCB *proc_table = NULL;   /* Heap-allocated process array       */
+static int msgqid = -1;
+static int tick_semid = -1;
+static int tick_done_semid = -1;
+static int start_semid = -1;
+static PCB *proc_table = NULL;
 static int clk_pid_global = -1;
 
 static int semaphore_up(int semid)
@@ -106,9 +106,6 @@ int main(int argc, char *argv[])
     const char *infile = (argc >= 2) ? argv[1] : "processes.txt";
     signal(SIGINT, clearResources);
 
-    /* ============================================================
-     * 1. Read processes.txt into a dynamic PCB array
-     * ============================================================ */
     FILE *fp = fopen(infile, "r");
     if (!fp)
     {
@@ -131,7 +128,6 @@ int main(int argc, char *argv[])
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
             continue;
 
-        /* Grow array if needed */
         if (count == capacity)
         {
             capacity *= 2;
@@ -148,11 +144,6 @@ int main(int argc, char *argv[])
 
         memset(&p, 0, sizeof(PCB));
 
-        /*
-         * Accept both project formats:
-         *   Phase 1: id arrival runtime priority
-         *   Phase 2: id arrival runtime priority base limit
-         */
         parsed_fields = sscanf(line, "%d%d%d%d%d%d",
                                &p.id, &p.arrival, &p.runtime, &p.priority, &p.base, &p.limit);
         if (parsed_fields == 4)
@@ -170,7 +161,7 @@ int main(int argc, char *argv[])
         {
             p.phase2_enabled = 1;
         }
-        p.remaining = p.runtime; /* initialise remaining = runtime   */
+        p.remaining = p.runtime;
         p.started = 0;
         p.finished = 0;
         proc_table[count++] = p;
@@ -178,14 +169,11 @@ int main(int argc, char *argv[])
     fclose(fp);
     printf("[Generator] Loaded %d processes from %s\n", count, infile);
 
-    /* ============================================================
-     * 2. Ask user for scheduling algorithm and its parameters
-     * ============================================================ */
     int algo = 0;
-    int quantum = 0; /* used by RR                */
-    int K = 1;       /* used by RR (R-bit clear)  */
-    int N = 0;       /* check interval (2-CPU)    */
-    int M = 0;       /* steal threshold (2-CPU)   */
+    int quantum = 0;
+    int K = 1;
+    int N = 0;
+    int M = 0;
 
     printf("\nChoose a scheduling algorithm:\n");
     printf("  %d - Preemptive Highest Priority First (HPF)\n", ALGO_HPF);
@@ -229,10 +217,6 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    /* ============================================================
-     * 3. Create the message queue BEFORE forking the scheduler
-     *    so the scheduler can open it immediately on startup.
-     * ============================================================ */
     cleanup_stale_ipc();
 
     msgqid = msgget(MSG_KEY, IPC_CREAT | 0644);
@@ -298,9 +282,6 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* ============================================================
-     * 4a. Fork the clock process
-     * ============================================================ */
     cleanup_stale_clock_shm();
 
     pid_t clk_pid = fork();
@@ -311,7 +292,6 @@ int main(int argc, char *argv[])
     }
     if (clk_pid == 0)
     {
-        /* Child: exec the clock binary */
         execl("./clk.out", "clk.out", NULL);
         perror("execl clk.out");
         exit(EXIT_FAILURE);
@@ -319,20 +299,6 @@ int main(int argc, char *argv[])
     clk_pid_global = clk_pid;
     printf("[Generator] Clock process forked (pid=%d)\n", clk_pid);
 
-    /* ============================================================
-     * 4b. Fork scheduler stack, passing algo params as argv
-     *
-     *   argv layout for scheduler.out (HPF/RR):
-     *     argv[0] = "scheduler"
-     *     argv[1] = algo   (always)
-     *     argv[2] = quantum (RR only; HPF: 0)
-     *
-     *   argv layout for master_scheduler.out (FCFS_2):
-     *     argv[0] = "master_scheduler"
-     *     argv[1] = algo   (= ALGO_FCFS_2)
-     *     argv[2] = N
-     *     argv[3] = M
-     * ============================================================ */
     char s_algo[16], s_q[16], s_n[16], s_m[16], s_k[16];
     snprintf(s_algo, sizeof(s_algo), "%d", algo);
     snprintf(s_q, sizeof(s_q), "%d", quantum);
@@ -369,9 +335,6 @@ int main(int argc, char *argv[])
         printf("[Generator] Scheduler process forked (pid=%d)\n", sched_pid);
     }
 
-    /* ============================================================
-     * 5. Connect to the clock (blocks until clock is ready)
-     * ============================================================ */
     initClk();
 
     if (algo == ALGO_FCFS_2 && !semaphore_down(start_semid))
@@ -381,22 +344,13 @@ int main(int argc, char *argv[])
 
     printf("[Generator] Clock initialised. Starting generation loop.\n");
 
-    /* ============================================================
-     * 6. Generation main loop
-     *
-     *    Strategy: sleep until the clock tick changes, then send
-     *    every process whose arrival time == current tick.
-     *    Processes in proc_table are sorted by arrival (per spec),
-     *    so we keep a cursor `next_idx` into the array.
-     * ============================================================ */
-    int next_idx = 0;  /* index of the next unsent process */
-    int prev_clk = 0;/* last observed clock value        */
+    int next_idx = 0;
+    int prev_clk = 0;
 
     while (next_idx < count)
     {
         int clk = getClk();
 
-        /* Poll until the clock advances */
         if (clk == prev_clk)
         {
             usleep(50000); /* sleep 50 ms to avoid busy-spinning */
@@ -404,14 +358,10 @@ int main(int argc, char *argv[])
         }
         prev_clk = clk;
 
-        /*
-         * Send all processes whose arrival time is <= current clock.
-         * (Handles simultaneous arrivals correctly.)
-         */
         while (next_idx < count && proc_table[next_idx].arrival <= clk)
         {
             Message msg;
-            msg.mtype = 1; /* mtype 1 = new process */
+            msg.mtype = 1;
             msg.proc = proc_table[next_idx];
 
             if (msgsnd(msgqid, &msg, sizeof(PCB), !IPC_NOWAIT) == -1)
@@ -433,7 +383,6 @@ int main(int argc, char *argv[])
             next_idx++;
         }
 
-        /* Signal scheduler that this tick's generation phase is complete. */
         if (!semaphore_up(tick_semid))
         {
             clearResources(0);
@@ -445,10 +394,6 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* ============================================================
-     * 7. Send the end-of-input sentinel (mtype = 2)
-     *    Scheduler uses this to know no more processes are coming.
-     * ============================================================ */
     Message sentinel;
     memset(&sentinel, 0, sizeof(Message));
     sentinel.mtype = 2;
@@ -461,7 +406,6 @@ int main(int argc, char *argv[])
         printf("[Generator] Sentinel sent — no more processes.\n");
     }
 
-    /* Wake scheduler one last time so it can consume the sentinel promptly. */
     if (!semaphore_up(tick_semid))
     {
         clearResources(0);
@@ -472,25 +416,15 @@ int main(int argc, char *argv[])
         clearResources(0);
     }
 
-    /* ============================================================
-     * 8. Wait for the scheduler to finish.
-     *    The scheduler calls destroyClk(true) on exit, which sends
-     *    SIGINT to the whole process group — this generator will be
-     *    killed too and clearResources() will fire.
-     *    If for any reason that doesn't happen, we wait manually.
-     * ============================================================ */
     waitpid(sched_pid, NULL, 0);
 
     clearResources(0);
     return 0;
 }
 
-/* ================================================================== */
-/*  Signal handler — cleans up IPC resources on interruption          */
-/* ================================================================== */
 void clearResources(int signum)
 {
-    (void)signum; /* suppress unused-parameter warning */
+    (void)signum;
     printf("\n[Generator] Caught signal — cleaning up IPC resources.\n");
 
     if (clk_pid_global > 0)
