@@ -37,6 +37,7 @@ static void clear_frame(FrameEntry *f)
     f->owner_pid = -1;
     f->vpn = -1;
     f->is_page_table = 0;
+    f->is_reserved = 0;
     f->R = 0;
     f->M = 0;
 }
@@ -62,11 +63,13 @@ static void invalidate_pte_for_frame(const FrameEntry *f)
     pte->M = 0;
 }
 
-static void claim_frame(int frame, int pid, int vpn, int is_page_table, int R, int M)
+static void claim_frame(int frame, int pid, int vpn, int is_page_table,
+                        int is_reserved, int R, int M)
 {
     frame_table[frame].owner_pid = pid;
     frame_table[frame].vpn = vpn;
     frame_table[frame].is_page_table = is_page_table;
+    frame_table[frame].is_reserved = is_reserved;
     frame_table[frame].R = R;
     frame_table[frame].M = M;
 }
@@ -79,7 +82,7 @@ static int select_nru_victim(void)
         {
             FrameEntry *f = &frame_table[i];
 
-            if (f->owner_pid == -1 || f->is_page_table)
+            if (f->owner_pid == -1 || f->is_page_table || f->is_reserved)
             {
                 continue;
             }
@@ -128,7 +131,7 @@ static void commit_page_to_frame(PCB *pcb, int vpn, int frame, int fault_write)
     pte->R = 1;
     pte->M = fault_write ? 1 : 0;
 
-    claim_frame(frame, pcb->id, vpn, 0, 1, fault_write ? 1 : 0);
+    claim_frame(frame, pcb->id, vpn, 0, 0, 1, fault_write ? 1 : 0);
 }
 
 /* =========================================================
@@ -268,7 +271,7 @@ int mmu_process_init(PCB *pcb, int now, FILE *log)
         /* No log line for NRU eviction at startup */
     }
 
-    claim_frame(pt_frame, pcb->id, -1, 1, 0, 0);
+    claim_frame(pt_frame, pcb->id, -1, 1, 0, 0, 0);
     pcb->page_table_frame = pt_frame;
 
     /* Allocate frame for virtual page 0. */
@@ -280,8 +283,8 @@ int mmu_process_init(PCB *pcb, int now, FILE *log)
     }
     else
     {
-        /* No free frame: use NRU eviction (page-table frame now occupied, so
-         * it is correctly skipped by select_nru_victim via is_page_table flag) */
+        /* No free frame: use NRU eviction (page-table and reserved frames are
+         * skipped by select_nru_victim). */
         first_data_frame = select_nru_victim();
         if (first_data_frame < 0)
         {
@@ -384,7 +387,7 @@ int mmu_handle_fault(PCB *pcb, int vpn, int write,
     if (frame != -1)
     {
         mmu_log_free_frame(log, frame);
-        claim_frame(frame, pcb->id, vpn, 0, 0, 0);
+        claim_frame(frame, pcb->id, vpn, 0, 1, 0, 0);
         if (disk_ticks_out)
         {
             *disk_ticks_out = FAULT_CHECK_TICKS + DISK_ACCESS_TICKS;
@@ -416,7 +419,7 @@ int mmu_handle_fault(PCB *pcb, int vpn, int write,
 
     invalidate_pte_for_frame(&frame_table[victim]);
     clear_frame(&frame_table[victim]);
-    claim_frame(victim, pcb->id, vpn, 0, 0, 0);
+    claim_frame(victim, pcb->id, vpn, 0, 1, 0, 0);
 
     return victim;
 }
@@ -443,7 +446,7 @@ void mmu_clear_r_bits(void)
         FrameEntry *f = &frame_table[i];
         PageTableEntry *pte;
 
-        if (f->owner_pid == -1 || f->is_page_table)
+        if (f->owner_pid == -1 || f->is_page_table || f->is_reserved)
         {
             continue;
         }

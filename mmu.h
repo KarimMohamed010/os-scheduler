@@ -37,12 +37,16 @@
  *  owner_pid == -1  →  frame is free
  *  is_page_table    →  frame holds a process page table;
  *                      it is never a candidate for eviction
+ *  is_reserved      →  frame has been claimed for an in-flight
+ *                      page fault and must not be evicted until
+ *                      the disk load completes
  * ========================================================= */
 typedef struct
 {
     int owner_pid;       /* PID that owns this frame, -1 = free  */
     int vpn;             /* virtual page number loaded here       */
     int is_page_table;   /* 1 = holds a page table (no evict)    */
+    int is_reserved;     /* 1 = pinned for an in-flight fault    */
     int R;               /* referenced bit  (set on any access)  */
     int M;               /* modified  bit   (set on write)       */
 } FrameEntry;
