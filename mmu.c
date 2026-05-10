@@ -98,26 +98,6 @@ static int select_nru_victim(void)
     return -1;
 }
 
-static int reserve_frame_quiet(void)
-{
-    int frame = mmu_alloc_frame();
-    if (frame != -1)
-    {
-        return frame;
-    }
-
-
-    int victim = select_nru_victim();
-    if (victim < 0)
-    {
-        return -1;
-    }
-
-    invalidate_pte_for_frame(&frame_table[victim]);
-    clear_frame(&frame_table[victim]);
-    return victim;
-}
-
 static void commit_page_to_frame(PCB *pcb, int vpn, int frame, int fault_write)
 {
     PageTableEntry *pte = get_pte(pcb->id, vpn);
@@ -376,6 +356,9 @@ int mmu_handle_fault(PCB *pcb, int vpn, int write,
 {
     int frame;
     int victim;
+
+    (void)write;
+    (void)now;
 
     if (!pcb || !is_valid_pid(pcb->id) || vpn < 0 ||
         vpn >= MAX_VPAGES || vpn >= pcb->limit)

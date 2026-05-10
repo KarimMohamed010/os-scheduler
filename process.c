@@ -9,6 +9,7 @@ int id;
 int req_mq;
 int ack_mq;
 int sync_sem;
+int phase2_enabled;
 
 MemRequest requests[MAX_REQUESTS];
 int num_requests = 0;
@@ -57,8 +58,11 @@ int main(int argc, char *argv[]) {
     if (argc < 3) return 1;
     remainingtime = atoi(argv[1]);
     id = atoi(argv[2]);
+    phase2_enabled = (argc >= 4) ? atoi(argv[3]) : 0;
 
-    load_requests();
+    if (phase2_enabled) {
+        load_requests();
+    }
 
     req_mq = msgget(PROC_REQ_MQ_KEY, 0666);
     ack_mq = msgget(PROC_ACK_MQ_KEY, 0666);

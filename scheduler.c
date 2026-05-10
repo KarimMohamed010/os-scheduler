@@ -369,6 +369,7 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
             pid_t pid;
             char runtime_str[32];
             char id_str[32];
+            char phase2_str[32];
             
             pid = fork();
             if (pid == -1)
@@ -381,7 +382,8 @@ static int receive_current_processes(SchedulerContext *ctx, int now)
             {
                 snprintf(runtime_str, sizeof(runtime_str), "%d", proc.runtime);
                 snprintf(id_str, sizeof(id_str), "%d", proc.id);
-                execl("./process.out", "process.out", runtime_str, id_str, NULL);
+                snprintf(phase2_str, sizeof(phase2_str), "%d", proc.phase2_enabled);
+                execl("./process.out", "process.out", runtime_str, id_str, phase2_str, NULL);
                 perror("execl process.out");
                 exit(1);
             }
@@ -864,6 +866,7 @@ static void child_dispatch_next(FCFS2ChildContext *ctx, int now)
         pid_t pid;
         char runtime_str[32];
         char id_str[32];
+        char phase2_str[32];
 
         pid = fork();
         if (pid == -1)
@@ -878,7 +881,8 @@ static void child_dispatch_next(FCFS2ChildContext *ctx, int now)
         {
             snprintf(runtime_str, sizeof(runtime_str), "%d", next.runtime);
             snprintf(id_str, sizeof(id_str), "%d", next.id);
-            execl("./process.out", "process.out", runtime_str, id_str, NULL);
+            snprintf(phase2_str, sizeof(phase2_str), "%d", next.phase2_enabled);
+            execl("./process.out", "process.out", runtime_str, id_str, phase2_str, NULL);
             perror("execl process.out");
             exit(1);
         }

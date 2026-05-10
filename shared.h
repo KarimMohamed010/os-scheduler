@@ -103,6 +103,7 @@ typedef struct
     int page_table_frame;   /* physical frame holding this PT       */
     int cpu_ticks_consumed; /* CPU ticks used since first dispatch  */
     int state;              /* PROC_READY / PROC_RUNNING / PROC_BLOCKED */
+    int phase2_enabled;     /* 1 when this run should issue MMU requests */
 } PCB;
 
 typedef struct

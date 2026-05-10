@@ -159,11 +159,16 @@ int main(int argc, char *argv[])
         {
             p.base = 0;
             p.limit = 1;
+            p.phase2_enabled = 0;
         }
         else if (parsed_fields != 6)
         {
             fprintf(stderr, "Warning: skipping malformed line: %s", line);
             continue;
+        }
+        else
+        {
+            p.phase2_enabled = 1;
         }
         p.remaining = p.runtime; /* initialise remaining = runtime   */
         p.started = 0;
